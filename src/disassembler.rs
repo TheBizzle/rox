@@ -1,6 +1,6 @@
 use crate::chunk::Chunk;
 
-use crate::opcode::OpCode::{self, Constant, Return};
+use crate::opcode::OpCode::{self, Add, Constant, Divide, Multiply, Negate, Return, Subtract};
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
   println!("== {name} ==");
@@ -11,7 +11,8 @@ pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
   }
 }
 
-fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
+#[allow(clippy::must_use_candidate)]
+pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
   print!("{offset:04} ");
 
   if offset > 0 && unsafe { *chunk.line_nums.add(offset) } == unsafe { *chunk.line_nums.add(offset - 1) } {
@@ -23,7 +24,7 @@ fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
   let ordinal = unsafe { *chunk.op_codes.add(offset) };
   match OpCode::from_repr(ordinal) {
     Some(Constant) => constant_instruction(&Constant, chunk, offset),
-    Some(Return) => simple_instruction(&Return, offset),
+    Some(x @ (Add | Subtract | Multiply | Divide | Negate | Return)) => simple_instruction(&x, offset),
     None => {
       println!("Unknown opcode: {chunk:?} | {offset}");
       offset + 1
