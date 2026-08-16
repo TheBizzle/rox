@@ -1,0 +1,4 @@
+cognitive-complexity-threshold = 20
+too-many-arguments-threshold = 100
+enum-variant-size-threshold = 128
+trivial-copy-size-limit = 128

@@ -1,0 +1,43 @@
+edition = "2024"
+
+max_width            = 110
+use_small_heuristics = "Max"
+
+imports_granularity = "Module"
+group_imports       = "StdExternalCrate"
+reorder_imports     = true
+
+brace_style          = "SameLineWhere"
+control_brace_style  = "AlwaysSameLine"
+where_single_line    = false
+binop_separator      = "Front"
+trailing_semicolon   = true
+spaces_around_ranges = false
+
+newline_style            = "Unix"
+hard_tabs                = false
+tab_spaces               = 2
+use_field_init_shorthand = true
+use_try_shorthand        = true
+
+fn_params_layout = "Compressed"
+
+chain_width                    = 110
+single_line_if_else_max_width  = 50
+single_line_let_else_max_width = 50
+
+struct_lit_width     = 90
+struct_variant_width = 90
+
+array_width        = 90
+attr_fn_like_width = 90
+
+wrap_comments               = true
+format_code_in_doc_comments = true
+normalize_comments          = true
+normalize_doc_attributes    = true
+
+match_block_trailing_comma = true
+match_arm_blocks           = true
+reorder_modules            = true
+remove_nested_parens       = true

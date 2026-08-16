@@ -1,0 +1,28 @@
+[package]
+name = "rox"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+
+authors = ["TheBizzle <jason.bertsche@gmail.com>"]
+description = "A Rust implementation of the clox bytecode virtual machine from Crafting Interpreters"
+license = "BSD-3"
+repository = "https://github.com/TheBizzle/rox"
+readme = "README.md"
+
+keywords = ["lox", "bytecode", "static-analysis", "virtual-machine"]
+categories = ["development-tools"]
+
+publish = false
+
+[dependencies]
+strum = { version = "0.28", features = ["derive"] }
+tokio = { version = "1.52.3", features = ["io-std", "macros", "rt-multi-thread"] }
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"
+nursery = "deny"

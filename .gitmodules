@@ -1,0 +1,3 @@
+[submodule "mothership"]
+	path = mothership
+	url = https://github.com/munificent/craftinginterpreters
