@@ -11,3 +11,9 @@ pub enum OpCode {
   Return,
   Subtract,
 }
+
+impl From<OpCode> for u8 {
+  fn from(opcode: OpCode) -> Self {
+    opcode as Self
+  }
+}

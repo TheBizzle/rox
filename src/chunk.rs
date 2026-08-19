@@ -46,7 +46,7 @@ impl Chunk {
     self
   }
 
-  pub fn write(&mut self, byte: u8, line_num: u32) {
+  pub fn write<T: Into<u8>>(&mut self, byte: T, line_num: u32) {
     if self.capacity < self.count + 1 {
       let old_capacity = self.capacity;
       self.capacity = grow_capacity!(old_capacity);
@@ -55,7 +55,7 @@ impl Chunk {
     }
 
     unsafe {
-      *self.op_codes.add(self.count) = byte;
+      *self.op_codes.add(self.count) = byte.into();
       *self.line_nums.add(self.count) = line_num;
     }
 
