@@ -13,8 +13,8 @@ async fn main() {
   let mut vm = VM::init();
 
   match &args[..] {
-    [_] => run_repl(&vm),
-    [_, filepath] => run_file(&vm, filepath),
+    [_] => run_repl(&mut vm),
+    [_, filepath] => run_file(&mut vm, filepath),
     _ => {
       eprintln!("Usage: rox [path]");
       exit(64)
@@ -26,7 +26,7 @@ async fn main() {
   exit(0);
 }
 
-fn run_repl(vm: &VM) {
+fn run_repl(vm: &mut VM) {
   let mut input = String::with_capacity(1024);
   let stdin = stdin();
   let mut stdout = stdout();
@@ -37,18 +37,18 @@ fn run_repl(vm: &VM) {
       println!("{error}");
       exit(65);
     }
-    interpret(vm, &input);
+    vm.interpret(&input);
   }
 }
 
-fn run_file(vm: &VM, filepath: &str) {
+fn run_file(vm: &mut VM, filepath: &str) {
   match read_to_string(filepath) {
     Err(_) => {
       eprintln!("Could not read file \"{filepath}\".");
       exit(74);
     },
     Ok(source) => {
-      let result = interpret(vm, &source);
+      let result = vm.interpret(&source);
       drop(source);
 
       match result {
@@ -58,9 +58,4 @@ fn run_file(vm: &VM, filepath: &str) {
       }
     },
   }
-}
-
-fn interpret(_vm: &VM, source: &str) -> Interpretation {
-  compile(source);
-  Success
 }

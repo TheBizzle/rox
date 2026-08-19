@@ -5,6 +5,8 @@ use std::slice;
 
 use crate::chunk::Chunk;
 
+use crate::compiler::compile;
+
 use crate::disassembler::disassemble_instruction;
 
 use crate::opcode::OpCode::{self, Add, Constant, Divide, Multiply, Negate, Return, Subtract};
@@ -19,6 +21,7 @@ pub enum Interpretation {
   RuntimeError,
   Success,
 }
+use Interpretation::CompilationError;
 
 // Need to hold onto `_stack`, so Rust doesn't overwrite its memory --Jason B. (8/16/26)
 pub struct VM {
@@ -41,14 +44,22 @@ impl VM {
   #[must_use]
   pub const fn free(&mut self) -> &Self {
     self.chunk_opt = None;
-
     self
   }
 
-  pub fn interpret(&mut self, chunk: &Chunk) -> Interpretation {
-    self.chunk_opt = Some(chunk);
-    self.inst_ptr = chunk.op_codes;
-    self.run()
+  pub fn interpret(&mut self, source: &str) -> Interpretation {
+    let mut chunk = Chunk::default();
+    self.chunk_opt = Some(&raw const chunk);
+
+    if compile(source, &mut chunk) {
+      self.inst_ptr = chunk.op_codes;
+      let result = self.run();
+      let _ = chunk.free();
+      result
+    } else {
+      let _ = chunk.free();
+      CompilationError
+    }
   }
 
   const fn pop(&mut self) -> Value {

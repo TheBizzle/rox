@@ -1,8 +1,10 @@
+#[derive(Clone)]
 pub struct Token {
   pub loc: SourceLoc,
   pub typ: TokenType,
 }
 
+#[derive(Clone)]
 #[allow(dead_code)]
 pub struct SourceLoc {
   pub start_index: u32,
@@ -11,7 +13,14 @@ pub struct SourceLoc {
   pub length: u32,
 }
 
-#[derive(Debug, PartialEq)]
+impl SourceLoc {
+  pub fn extract(&self, source: &str) -> String {
+    let range = (self.start_index as usize)..((self.start_index + self.length) as usize);
+    source.to_string()[range].to_string()
+  }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum TokenType {
   And,
   Bang,
