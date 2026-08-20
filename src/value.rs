@@ -3,7 +3,9 @@ use std::ptr::null_mut;
 use crate::memory::{free_array, grow_array, grow_capacity};
 
 pub enum Value {
+  Boolean(bool),
   Double(f64),
+  Nil,
 }
 
 impl Value {
@@ -11,6 +13,9 @@ impl Value {
   pub fn stringify(&self) -> String {
     match self {
       Self::Double(x) => format!("{x}"),
+      Self::Boolean(true) => "true".to_string(),
+      Self::Boolean(false) => "false".to_string(),
+      Self::Nil => "nil".to_string(),
     }
   }
 }

@@ -4,12 +4,18 @@ use crate::chunk::Chunk;
 
 use crate::disassembler::disassemble_chunk;
 
-use crate::opcode::OpCode::{Add, Constant, Divide, Multiply, Negate, Return as ReturnCode, Subtract};
+use crate::opcode::OpCode::{
+  self, Add, Constant, Divide, Equal as EqualCode, False as FalseCode, Greater as GreaterCode,
+  Less as LessCode, Multiply, Negate, Nil as NilCode, Not, Return as ReturnCode, Subtract, True as TrueCode,
+};
 
 use crate::parser::Parser;
 
 use crate::token::Token;
-use crate::token::TokenType::{self, Bang, Eof, LeftParen, Minus, Number, Plus, RightParen, Slash, Star};
+use crate::token::TokenType::{
+  self, Bang, BangEqual, Eof, EqualEqual, False, Greater, GreaterEqual, LeftParen, Less, LessEqual, Minus,
+  Nil, Number, Plus, RightParen, Slash, Star, True,
+};
 
 use crate::value::Value::{self, Double};
 
@@ -48,11 +54,24 @@ struct ParseRule<'a, 'b> {
 fn rule_for<'a, 'b>(typ: &TokenType) -> ParseRule<'a, 'b> {
   let (prefix, infix, precedence): (Option<ParseFn<'a, 'b>>, Option<ParseFn<'a, 'b>>, Precedence) = match typ
   {
-    LeftParen => (Some(Compiler::parse_grouping), None, Precedence::Bupkis),
-    Minus => (Some(Compiler::parse_unary), Some(Compiler::parse_binary), Precedence::Term),
-    Plus => (None, Some(Compiler::parse_binary), Precedence::Term),
     Slash | Star => (None, Some(Compiler::parse_binary), Precedence::Factor),
+
+    Minus => (Some(Compiler::parse_unary), Some(Compiler::parse_binary), Precedence::Term),
+
+    Plus => (None, Some(Compiler::parse_binary), Precedence::Term),
+
+    Greater | GreaterEqual | Less | LessEqual => (None, Some(Compiler::parse_binary), Precedence::Comparison),
+
+    BangEqual | EqualEqual => (None, Some(Compiler::parse_binary), Precedence::Equality),
+
     Number(_) => (Some(Compiler::parse_number), None, Precedence::Bupkis),
+
+    Bang => (Some(Compiler::parse_unary), None, Precedence::Bupkis),
+
+    LeftParen => (Some(Compiler::parse_grouping), None, Precedence::Bupkis),
+
+    False | Nil | True => (Some(Compiler::parse_literal), None, Precedence::Bupkis),
+
     _ => (None, None, Precedence::Bupkis),
   };
 
@@ -109,20 +128,36 @@ impl<'a, 'b> Compiler<'a, 'b> {
   }
 
   fn parse_binary(&mut self) {
+    enum Bytes {
+      Zero,
+      One(OpCode),
+      Two(OpCode, OpCode),
+    }
+    use Bytes::{One, Two, Zero};
+
     let operator_type = self.parser.previous_token_opt.as_ref().unwrap().typ.clone();
     let rule = rule_for(&operator_type);
     self.parse_precedence(&rule.precedence.next());
 
-    let opcode_opt = match operator_type {
-      Plus => Some(Add),
-      Minus => Some(Subtract),
-      Star => Some(Multiply),
-      Slash => Some(Divide),
-      _ => None,
+    let opcodes = match operator_type {
+      BangEqual => Two(EqualCode, Not),
+      Bang => One(Not),
+      EqualEqual => One(EqualCode),
+      GreaterEqual => Two(LessCode, Not),
+      Greater => One(GreaterCode),
+      LessEqual => Two(GreaterCode, Not),
+      Less => One(LessCode),
+      Minus => One(Subtract),
+      Plus => One(Add),
+      Slash => One(Divide),
+      Star => One(Multiply),
+      _ => Zero,
     };
 
-    if let Some(opcode) = opcode_opt {
-      self.emit_byte(opcode);
+    match opcodes {
+      Zero => {},
+      One(opcode) => self.emit_byte(opcode),
+      Two(op1, op2) => self.emit_bytes(op1, op2),
     }
   }
 
@@ -133,6 +168,15 @@ impl<'a, 'b> Compiler<'a, 'b> {
   pub fn parse_grouping(&mut self) {
     self.parse_expression();
     self.parser.consume(&RightParen, "Expect ')' after expression.");
+  }
+
+  pub fn parse_literal(&mut self) {
+    match self.parser.previous_token_opt.as_ref().unwrap().typ {
+      False => self.emit_byte(FalseCode),
+      Nil => self.emit_byte(NilCode),
+      True => self.emit_byte(TrueCode),
+      _ => {},
+    }
   }
 
   pub fn parse_number(&mut self) {
@@ -167,7 +211,9 @@ impl<'a, 'b> Compiler<'a, 'b> {
       Minus => {
         self.emit_byte(Negate);
       },
-      Bang => {},
+      Bang => {
+        self.emit_byte(Not);
+      },
       _ => {},
     }
   }

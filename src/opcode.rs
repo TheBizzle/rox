@@ -6,10 +6,17 @@ pub enum OpCode {
   Add,
   Constant,
   Divide,
+  Equal,
+  False,
+  Greater,
+  Less,
   Multiply,
   Negate,
+  Nil,
+  Not,
   Return,
   Subtract,
+  True,
 }
 
 impl From<OpCode> for u8 {

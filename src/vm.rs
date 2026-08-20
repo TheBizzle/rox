@@ -9,19 +9,23 @@ use crate::compiler::compile;
 
 use crate::disassembler::disassemble_instruction;
 
-use crate::opcode::OpCode::{self, Add, Constant, Divide, Multiply, Negate, Return, Subtract};
+use crate::opcode::OpCode::{
+  self, Add, Constant, Divide, Equal, False, Greater, Less, Multiply, Negate, Nil, Not, Return, Subtract,
+  True,
+};
 
-use crate::value::Value::{self, Double};
+use crate::value::Value::{self, Boolean, Double, Nil as NilValue};
 
 const IS_DEBUGGING: bool = true;
 const STACK_MAX: usize = 256;
 
+#[derive(Eq, PartialEq)]
 pub enum Interpretation {
   CompilationError,
   RuntimeError,
   Success,
 }
-use Interpretation::CompilationError;
+use Interpretation::{CompilationError, RuntimeError, Success};
 
 // Need to hold onto `_stack`, so Rust doesn't overwrite its memory --Jason B. (8/16/26)
 pub struct VM {
@@ -62,6 +66,10 @@ impl VM {
     }
   }
 
+  const fn peek(&mut self, distance: usize) -> Value {
+    unsafe { ptr::read(self.stack_top.sub(distance + 1)) }
+  }
+
   const fn pop(&mut self) -> Value {
     self.stack_top = unsafe { self.stack_top.sub(1) };
     unsafe { ptr::read(self.stack_top) }
@@ -72,21 +80,42 @@ impl VM {
     self.stack_top = unsafe { self.stack_top.add(1) };
   }
 
-  const fn _reset_stack(&mut self) {
+  const fn reset_stack(&mut self) {
     self.stack_top = self.stack_addr;
   }
 
+  #[allow(clippy::too_many_lines)]
   fn run(&mut self) -> Interpretation {
+    enum ProgressState {
+      Continue,
+      Done,
+      Error,
+    }
+    use ProgressState::{Continue, Done, Error};
+
+    macro_rules! runtime_error {
+      ($($arg: tt)*) => {{
+        self.runtime_error_impl(format_args!($($arg)*));
+        Error
+      }};
+    }
+
     macro_rules! binary_op {
-        ($op: tt) => {{
-            let b = self.pop();
-            let a = self.pop();
-            let result =
-              match (a, b) {
-                (Double(x), Double(y)) => Double(x $op y)
-              };
+      ($value_type: tt, $op: tt) => {{
+        match (self.peek(0), self.peek(1)) {
+          (Double(b), Double(a)) => {
+            let _      = self.pop();
+            let _      = self.pop();
+            let result = $value_type(a $op b);
             self.push(result);
-        }};
+            Continue
+          },
+          _ => {
+            runtime_error!("Operands must be numbers.")
+          }
+
+        }
+      }};
     }
 
     macro_rules! read_byte {
@@ -101,6 +130,13 @@ impl VM {
       () => {{
         let byte = read_byte!() as usize;
         unsafe { ptr::read((*self.chunk_opt.unwrap()).constants.values.add(byte)) }
+      }};
+    }
+
+    macro_rules! push_and_win {
+      ($x: expr) => {{
+        self.push($x);
+        Continue
       }};
     }
 
@@ -120,30 +156,84 @@ impl VM {
       }
 
       let ordinal = read_byte!();
-      match OpCode::from_repr(ordinal) {
-        Some(Add) => binary_op!(+),
+
+      let progress_state = match OpCode::from_repr(ordinal) {
+        Some(Add) => binary_op!(Double, +),
         Some(Constant) => {
           let constant = read_constant!();
-          self.push(constant);
+          push_and_win!(constant)
         },
-        Some(Subtract) => binary_op!(-),
-        Some(Divide) => binary_op!(/),
-        Some(Multiply) => binary_op!(*),
+        Some(Divide) => binary_op!(Double, /),
+        Some(Equal) => {
+          let b = self.pop();
+          let a = self.pop();
+          push_and_win!(Boolean(values_are_equal(a, b)))
+        },
+        Some(False) => push_and_win!(Boolean(false)),
+        Some(Greater) => binary_op!(Boolean, >),
+        Some(Less) => binary_op!(Boolean, <),
+        Some(Multiply) => binary_op!(Double, *),
         Some(Negate) => {
-          let new_value = match self.pop() {
-            Double(x) => Double(-x),
-          };
-          self.push(new_value);
+          if let Double(x) = self.peek(0) {
+            let _ = self.pop();
+            push_and_win!(Double(-x))
+          } else {
+            runtime_error!("Operand must be a number.")
+          }
+        },
+        Some(Nil) => push_and_win!(Value::Nil),
+        Some(Not) => {
+          let x = self.pop();
+          push_and_win!(Boolean(is_falsey(&x)))
         },
         Some(Return) => {
           println!("{}", self.pop().stringify());
-          return Interpretation::Success;
+          Done
         },
+        Some(Subtract) => binary_op!(Double, -),
+        Some(True) => push_and_win!(Boolean(true)),
         None => {
           println!("Unknown instruction enum ordinal: {ordinal}");
           exit(1);
         },
+      };
+
+      match progress_state {
+        Error => {
+          return RuntimeError;
+        },
+        Done => {
+          return Success;
+        },
+        Continue => {},
       }
     }
+  }
+
+  fn runtime_error_impl(&mut self, args: std::fmt::Arguments) {
+    eprintln!("{args}");
+
+    let line = unsafe {
+      let chunk = &*self.chunk_opt.unwrap();
+      let instruction = self.inst_ptr.offset_from(chunk.op_codes).cast_unsigned() - 1;
+      *chunk.line_nums.add(instruction)
+    };
+
+    eprintln!("[line {line}] in script");
+
+    self.reset_stack();
+  }
+}
+
+const fn is_falsey(value: &Value) -> bool {
+  matches!(value, NilValue | Boolean(false))
+}
+
+fn values_are_equal(a: Value, b: Value) -> bool {
+  match (a, b) {
+    (Boolean(x), Boolean(y)) => x == y,
+    (Double(x), Double(y)) => (x - y).abs() < 1e-9,
+    (NilValue, NilValue) => true,
+    _ => false,
   }
 }
