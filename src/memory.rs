@@ -1,6 +1,5 @@
-use std::alloc::{self, Layout};
+use std::alloc::{self, Layout, handle_alloc_error};
 use std::mem::{align_of, size_of};
-use std::process::exit;
 
 macro_rules! free_array {
   ($type: ty, $pointer: expr, $old_count: expr) => {
@@ -49,8 +48,8 @@ pub unsafe fn reallocate<T>(pointer: *mut T, old_count: usize, new_count: usize)
     let old_layout = Layout::from_size_align(size_of::<T>() * old_count, align_of::<T>()).unwrap();
     let result = unsafe { alloc::realloc(pointer.cast::<u8>(), old_layout, new_size).cast::<T>() };
     if result.is_null() {
-      println!("Reallocation failed");
-      exit(1);
+      eprintln!("Reallocation failed");
+      handle_alloc_error(old_layout);
     } else {
       result
     }
