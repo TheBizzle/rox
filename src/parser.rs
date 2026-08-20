@@ -25,7 +25,7 @@ impl Parser<'_> {
   }
 
   pub fn advance(&mut self) {
-    self.previous_token_opt = self.current_token_opt.clone();
+    self.previous_token_opt = self.current_token_opt.take();
 
     loop {
       match self.lexer.next_token() {
