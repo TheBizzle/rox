@@ -9,7 +9,7 @@ pub struct Parser<'a> {
   pub(super) previous_token_opt: Option<Token>,
   pub(super) had_error: bool,
   is_panicking: bool,
-  source: &'a str,
+  pub(super) source: &'a str,
 }
 
 impl Parser<'_> {

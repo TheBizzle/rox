@@ -1,3 +1,6 @@
+use std::rc::Rc;
+use std::sync::Mutex;
+
 use strum::FromRepr;
 
 use crate::chunk::Chunk;
@@ -11,13 +14,15 @@ use crate::opcode::OpCode::{
 
 use crate::parser::Parser;
 
+use crate::object::{GcObject, copy_string};
+
 use crate::token::Token;
 use crate::token::TokenType::{
-  self, Bang, BangEqual, Eof, EqualEqual, False, Greater, GreaterEqual, LeftParen, Less, LessEqual, Minus,
-  Nil, Number, Plus, RightParen, Slash, Star, True,
+  self, Bang, BangEqual, Eof, EqualEqual, False, Greater, GreaterEqual, LeftParen, Less, LessEqual,
+  LoxString, Minus, Nil, Number, Plus, RightParen, Slash, Star, True,
 };
 
-use crate::value::Value::{self, Double};
+use crate::value::Value::{self, Double, ReferenceValue};
 
 const IS_DEBUGGING: bool = true;
 
@@ -66,6 +71,8 @@ fn rule_for<'a, 'b>(typ: &TokenType) -> ParseRule<'a, 'b> {
 
     Number(_) => (Some(Compiler::parse_number), None, Precedence::Bupkis),
 
+    LoxString(_) => (Some(Compiler::parse_string), None, Precedence::Bupkis),
+
     Bang => (Some(Compiler::parse_unary), None, Precedence::Bupkis),
 
     LeftParen => (Some(Compiler::parse_grouping), None, Precedence::Bupkis),
@@ -81,10 +88,11 @@ fn rule_for<'a, 'b>(typ: &TokenType) -> ParseRule<'a, 'b> {
 struct Compiler<'a, 'b> {
   parser: Parser<'a>,
   compiling_chunk: &'b mut Chunk,
+  objects: Rc<Mutex<*mut GcObject>>,
 }
 
-pub fn compile(source: &str, chunk: &mut Chunk) -> bool {
-  let mut compiler = Compiler::new(source, chunk);
+pub fn compile(source: &str, chunk: &mut Chunk, objects: Rc<Mutex<*mut GcObject>>) -> bool {
+  let mut compiler = Compiler::new(source, chunk, objects);
 
   compiler.parser.advance();
   compiler.parse_expression();
@@ -94,8 +102,8 @@ pub fn compile(source: &str, chunk: &mut Chunk) -> bool {
 }
 
 impl<'a, 'b> Compiler<'a, 'b> {
-  pub fn new(source: &'a str, chunk: &'b mut Chunk) -> Self {
-    Compiler { parser: Parser::new(source), compiling_chunk: chunk }
+  pub fn new(source: &'a str, chunk: &'b mut Chunk, objects: Rc<Mutex<*mut GcObject>>) -> Self {
+    Compiler { parser: Parser::new(source), compiling_chunk: chunk, objects }
   }
 
   fn end(&mut self) {
@@ -199,6 +207,14 @@ impl<'a, 'b> Compiler<'a, 'b> {
     } else {
       self.parser.error("Expect expression.");
     }
+  }
+
+  pub fn parse_string(&mut self) {
+    let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
+    let str_start = (prev_loc.start_index + 1) as usize;
+    let length = (prev_loc.length - 2) as usize;
+    let str_ref = copy_string(self.parser.source, str_start, length, &Rc::clone(&self.objects));
+    self.emit_constant(ReferenceValue(str_ref));
   }
 
   pub fn parse_unary(&mut self) {

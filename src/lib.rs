@@ -8,5 +8,6 @@ pub mod vm;
 mod error;
 mod lexer;
 mod memory;
+mod object;
 mod parser;
 mod token;

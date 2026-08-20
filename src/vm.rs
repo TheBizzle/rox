@@ -1,7 +1,9 @@
 use std::array;
 use std::process::exit;
 use std::ptr::{self, null_mut};
+use std::rc::Rc;
 use std::slice;
+use std::sync::Mutex;
 
 use crate::chunk::Chunk;
 
@@ -9,12 +11,14 @@ use crate::compiler::compile;
 
 use crate::disassembler::disassemble_instruction;
 
+use crate::object::{GcObject, HeapObject::HeapString, refs_are_equal};
+
 use crate::opcode::OpCode::{
   self, Add, Constant, Divide, Equal, False, Greater, Less, Multiply, Negate, Nil, Not, Return, Subtract,
   True,
 };
 
-use crate::value::Value::{self, Boolean, Double, Nil as NilValue};
+use crate::value::Value::{self, Boolean, Double, Nil as NilValue, ReferenceValue};
 
 const IS_DEBUGGING: bool = true;
 const STACK_MAX: usize = 256;
@@ -31,6 +35,7 @@ use Interpretation::{CompilationError, RuntimeError, Success};
 pub struct VM {
   chunk_opt: Option<*const Chunk>,
   inst_ptr: *mut u8,
+  objects: Rc<Mutex<*mut GcObject>>,
   _stack: Box<[Value; STACK_MAX]>,
   stack_addr: *mut Value,
   stack_top: *mut Value,
@@ -42,12 +47,33 @@ impl VM {
     let mut stack: [Value; STACK_MAX] = array::from_fn(|_| Double(0.0));
     let stack_addr = stack.as_mut_ptr();
     let stack_top = stack.as_mut_ptr();
-    Self { chunk_opt: None, inst_ptr: null_mut(), _stack: Box::new(stack), stack_addr, stack_top }
+    Self {
+      chunk_opt: None,
+      inst_ptr: null_mut(),
+      objects: Rc::new(Mutex::new(null_mut())),
+      _stack: Box::new(stack),
+      stack_addr,
+      stack_top,
+    }
   }
 
   #[must_use]
-  pub const fn free(&mut self) -> &Self {
+  /// # Panics
+  ///
+  /// When a lock cannot be acquired on the objects for GC'ing.
+  pub fn free(&mut self) -> &Self {
     self.chunk_opt = None;
+
+    let mut ptr = *self.objects.lock().unwrap();
+    while !ptr.is_null() {
+      let next = unsafe { (*ptr).next };
+      unsafe {
+        (*ptr).free();
+        drop(Box::from_raw(ptr));
+      }
+      ptr = next;
+    }
+
     self
   }
 
@@ -55,7 +81,7 @@ impl VM {
     let mut chunk = Chunk::default();
     self.chunk_opt = Some(&raw const chunk);
 
-    if compile(source, &mut chunk) {
+    if compile(source, &mut chunk, Rc::clone(&self.objects)) {
       self.inst_ptr = chunk.op_codes;
       let result = self.run();
       let _ = chunk.free();
@@ -158,7 +184,26 @@ impl VM {
       let ordinal = read_byte!();
 
       let progress_state = match OpCode::from_repr(ordinal) {
-        Some(Add) => binary_op!(Double, +),
+        Some(Add) => {
+          let a = self.peek(1);
+          let b = self.peek(0);
+
+          match (a, b) {
+            (Double(x), Double(y)) => {
+              let _ = self.pop();
+              let _ = self.pop();
+              push_and_win!(Double(x + y))
+            },
+            #[allow(irrefutable_let_patterns)]
+            (ReferenceValue(x), ReferenceValue(y))
+              if let (HeapString(str1), HeapString(str2)) =
+                (unsafe { &(*x.0).object }, unsafe { &(*y.0).object }) =>
+            {
+              push_and_win!(ReferenceValue(str1.concatenate(str2, &Rc::clone(&self.objects))))
+            },
+            _ => runtime_error!("Operands must be two numbers or two strings."),
+          }
+        },
         Some(Constant) => {
           let constant = read_constant!();
           push_and_win!(constant)
@@ -233,6 +278,7 @@ fn values_are_equal(a: Value, b: Value) -> bool {
   match (a, b) {
     (Boolean(x), Boolean(y)) => x == y,
     (Double(x), Double(y)) => (x - y).abs() < 1e-9,
+    (ReferenceValue(x), ReferenceValue(y)) => refs_are_equal(&x, &y),
     (NilValue, NilValue) => true,
     _ => false,
   }

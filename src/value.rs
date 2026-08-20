@@ -2,10 +2,13 @@ use std::ptr::null_mut;
 
 use crate::memory::{free_array, grow_array, grow_capacity};
 
+use crate::object::{HeapObject::HeapString, Reference};
+
 pub enum Value {
   Boolean(bool),
   Double(f64),
   Nil,
+  ReferenceValue(Reference),
 }
 
 impl Value {
@@ -16,6 +19,12 @@ impl Value {
       Self::Boolean(true) => "true".to_string(),
       Self::Boolean(false) => "false".to_string(),
       Self::Nil => "nil".to_string(),
+      Self::ReferenceValue(Reference(gc_obj_ptr)) => {
+        let gc_obj = unsafe { &**gc_obj_ptr };
+        match &gc_obj.object {
+          HeapString(str) => str.to_string(),
+        }
+      },
     }
   }
 }
