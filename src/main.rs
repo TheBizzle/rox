@@ -33,6 +33,7 @@ fn run_repl(vm: &mut VM) {
   loop {
     print!("> ");
     stdout.flush().unwrap();
+    input.clear();
     if let Err(error) = stdin.read_line(&mut input) {
       println!("{error}");
       exit(65);
