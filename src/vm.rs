@@ -161,7 +161,8 @@ impl VM {
 
     macro_rules! push_and_win {
       ($x: expr) => {{
-        self.push($x);
+        let x = $x;
+        self.push(x);
         Continue
       }};
     }
@@ -205,8 +206,7 @@ impl VM {
           }
         },
         Some(Constant) => {
-          let constant = read_constant!();
-          push_and_win!(constant)
+          push_and_win!(read_constant!())
         },
         Some(Divide) => binary_op!(Double, /),
         Some(Equal) => {
@@ -228,8 +228,7 @@ impl VM {
         },
         Some(Nil) => push_and_win!(Value::Nil),
         Some(Not) => {
-          let x = self.pop();
-          push_and_win!(Boolean(is_falsey(&x)))
+          push_and_win!(Boolean(is_falsey(&self.pop())))
         },
         Some(Return) => {
           println!("{}", self.pop().stringify());
