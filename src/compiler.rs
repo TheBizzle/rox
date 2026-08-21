@@ -1,6 +1,3 @@
-use std::rc::Rc;
-use std::sync::Mutex;
-
 use strum::FromRepr;
 
 use crate::chunk::Chunk;
@@ -14,7 +11,7 @@ use crate::opcode::OpCode::{
 
 use crate::parser::Parser;
 
-use crate::object::{GcObject, copy_string};
+use crate::gc::Gc;
 
 use crate::token::Token;
 use crate::token::TokenType::{
@@ -48,51 +45,53 @@ impl Precedence {
   }
 }
 
-type ParseFn<'a, 'b> = fn(&mut Compiler<'a, 'b>);
+type ParseFn<'a, 'b, 'c> = fn(&mut Compiler<'a, 'b, 'c>);
 
-struct ParseRule<'a, 'b> {
-  prefix: Option<ParseFn<'a, 'b>>,
-  infix: Option<ParseFn<'a, 'b>>,
+struct ParseRule<'a, 'b, 'c> {
+  prefix: Option<ParseFn<'a, 'b, 'c>>,
+  infix: Option<ParseFn<'a, 'b, 'c>>,
   precedence: Precedence,
 }
 
-fn rule_for<'a, 'b>(typ: &TokenType) -> ParseRule<'a, 'b> {
-  let (prefix, infix, precedence): (Option<ParseFn<'a, 'b>>, Option<ParseFn<'a, 'b>>, Precedence) = match typ
-  {
-    Slash | Star => (None, Some(Compiler::parse_binary), Precedence::Factor),
+fn rule_for<'a, 'b, 'c>(typ: &TokenType) -> ParseRule<'a, 'b, 'c> {
+  let (prefix, infix, precedence): (Option<ParseFn<'a, 'b, 'c>>, Option<ParseFn<'a, 'b, 'c>>, Precedence) =
+    match typ {
+      Slash | Star => (None, Some(Compiler::parse_binary), Precedence::Factor),
 
-    Minus => (Some(Compiler::parse_unary), Some(Compiler::parse_binary), Precedence::Term),
+      Minus => (Some(Compiler::parse_unary), Some(Compiler::parse_binary), Precedence::Term),
 
-    Plus => (None, Some(Compiler::parse_binary), Precedence::Term),
+      Plus => (None, Some(Compiler::parse_binary), Precedence::Term),
 
-    Greater | GreaterEqual | Less | LessEqual => (None, Some(Compiler::parse_binary), Precedence::Comparison),
+      Greater | GreaterEqual | Less | LessEqual => {
+        (None, Some(Compiler::parse_binary), Precedence::Comparison)
+      },
 
-    BangEqual | EqualEqual => (None, Some(Compiler::parse_binary), Precedence::Equality),
+      BangEqual | EqualEqual => (None, Some(Compiler::parse_binary), Precedence::Equality),
 
-    Number(_) => (Some(Compiler::parse_number), None, Precedence::Bupkis),
+      Number(_) => (Some(Compiler::parse_number), None, Precedence::Bupkis),
 
-    LoxString(_) => (Some(Compiler::parse_string), None, Precedence::Bupkis),
+      LoxString(_) => (Some(Compiler::parse_string), None, Precedence::Bupkis),
 
-    Bang => (Some(Compiler::parse_unary), None, Precedence::Bupkis),
+      Bang => (Some(Compiler::parse_unary), None, Precedence::Bupkis),
 
-    LeftParen => (Some(Compiler::parse_grouping), None, Precedence::Bupkis),
+      LeftParen => (Some(Compiler::parse_grouping), None, Precedence::Bupkis),
 
-    False | Nil | True => (Some(Compiler::parse_literal), None, Precedence::Bupkis),
+      False | Nil | True => (Some(Compiler::parse_literal), None, Precedence::Bupkis),
 
-    _ => (None, None, Precedence::Bupkis),
-  };
+      _ => (None, None, Precedence::Bupkis),
+    };
 
   ParseRule { prefix, infix, precedence }
 }
 
-struct Compiler<'a, 'b> {
+struct Compiler<'a, 'b, 'c> {
   parser: Parser<'a>,
   compiling_chunk: &'b mut Chunk,
-  objects: Rc<Mutex<*mut GcObject>>,
+  gc: &'c mut Gc,
 }
 
-pub fn compile(source: &str, chunk: &mut Chunk, objects: Rc<Mutex<*mut GcObject>>) -> bool {
-  let mut compiler = Compiler::new(source, chunk, objects);
+pub fn compile(source: &str, chunk: &mut Chunk, gc: &mut Gc) -> bool {
+  let mut compiler = Compiler::new(source, chunk, gc);
 
   compiler.parser.advance();
   compiler.parse_expression();
@@ -101,9 +100,9 @@ pub fn compile(source: &str, chunk: &mut Chunk, objects: Rc<Mutex<*mut GcObject>
   !compiler.parser.had_error
 }
 
-impl<'a, 'b> Compiler<'a, 'b> {
-  pub fn new(source: &'a str, chunk: &'b mut Chunk, objects: Rc<Mutex<*mut GcObject>>) -> Self {
-    Compiler { parser: Parser::new(source), compiling_chunk: chunk, objects }
+impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
+  pub fn new(source: &'a str, chunk: &'b mut Chunk, gc: &'c mut Gc) -> Self {
+    Compiler { parser: Parser::new(source), compiling_chunk: chunk, gc }
   }
 
   fn end(&mut self) {
@@ -213,7 +212,7 @@ impl<'a, 'b> Compiler<'a, 'b> {
     let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
     let str_start = (prev_loc.start_index + 1) as usize;
     let length = (prev_loc.length - 2) as usize;
-    let str_ref = copy_string(self.parser.source, str_start, length, &Rc::clone(&self.objects));
+    let str_ref = self.gc.copy_string(self.parser.source, str_start, length);
     self.emit_constant(ReferenceValue(str_ref));
   }
 

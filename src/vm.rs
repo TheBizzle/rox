@@ -1,9 +1,7 @@
 use std::array;
 use std::process::exit;
 use std::ptr::{self, null_mut};
-use std::rc::Rc;
 use std::slice;
-use std::sync::Mutex;
 
 use crate::chunk::Chunk;
 
@@ -11,7 +9,7 @@ use crate::compiler::compile;
 
 use crate::disassembler::disassemble_instruction;
 
-use crate::object::{GcObject, HeapObject::HeapString, refs_are_equal};
+use crate::gc::{Gc, HeapObject::HeapString, refs_are_equal};
 
 use crate::opcode::OpCode::{
   self, Add, Constant, Divide, Equal, False, Greater, Less, Multiply, Negate, Nil, Not, Return, Subtract,
@@ -34,8 +32,8 @@ use Interpretation::{CompilationError, RuntimeError, Success};
 // Need to hold onto `_stack`, so Rust doesn't overwrite its memory --Jason B. (8/16/26)
 pub struct VM {
   chunk_opt: Option<*const Chunk>,
+  gc: Gc,
   inst_ptr: *mut u8,
-  objects: Rc<Mutex<*mut GcObject>>,
   _stack: Box<[Value; STACK_MAX]>,
   stack_addr: *mut Value,
   stack_top: *mut Value,
@@ -49,8 +47,8 @@ impl VM {
     let stack_top = stack.as_mut_ptr();
     Self {
       chunk_opt: None,
+      gc: Gc::new(),
       inst_ptr: null_mut(),
-      objects: Rc::new(Mutex::new(null_mut())),
       _stack: Box::new(stack),
       stack_addr,
       stack_top,
@@ -63,16 +61,8 @@ impl VM {
   /// When a lock cannot be acquired on the objects for GC'ing.
   pub fn free(&mut self) -> &Self {
     self.chunk_opt = None;
-
-    let mut ptr = *self.objects.lock().unwrap();
-    while !ptr.is_null() {
-      let next = unsafe { (*ptr).next };
-      unsafe {
-        (*ptr).free();
-        drop(Box::from_raw(ptr));
-      }
-      ptr = next;
-    }
+    self.gc.free();
+    self.gc = Gc::new();
 
     self
   }
@@ -81,7 +71,7 @@ impl VM {
     let mut chunk = Chunk::default();
     self.chunk_opt = Some(&raw const chunk);
 
-    if compile(source, &mut chunk, Rc::clone(&self.objects)) {
+    if compile(source, &mut chunk, &mut self.gc) {
       self.inst_ptr = chunk.op_codes;
       let result = self.run();
       let _ = chunk.free();
@@ -200,7 +190,7 @@ impl VM {
               if let (HeapString(str1), HeapString(str2)) =
                 (unsafe { &(*x.0).object }, unsafe { &(*y.0).object }) =>
             {
-              push_and_win!(ReferenceValue(str1.concatenate(str2, &Rc::clone(&self.objects))))
+              push_and_win!(ReferenceValue(self.gc.concatenate_strings(str1, str2)))
             },
             _ => runtime_error!("Operands must be two numbers or two strings."),
           }

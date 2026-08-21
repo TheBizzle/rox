@@ -6,8 +6,8 @@ pub mod value;
 pub mod vm;
 
 mod error;
+mod gc;
 mod lexer;
 mod memory;
-mod object;
 mod parser;
 mod token;

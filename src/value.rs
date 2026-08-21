@@ -2,7 +2,7 @@ use std::ptr::null_mut;
 
 use crate::memory::{free_array, grow_array, grow_capacity};
 
-use crate::object::{HeapObject::HeapString, Reference};
+use crate::gc::{HeapObject::HeapString, Reference};
 
 pub enum Value {
   Boolean(bool),
