@@ -187,8 +187,7 @@ impl VM {
             },
             #[allow(irrefutable_let_patterns)]
             (ReferenceValue(x), ReferenceValue(y))
-              if let (HeapString(str1), HeapString(str2)) =
-                (unsafe { &(*x.0).object }, unsafe { &(*y.0).object }) =>
+              if let (HeapString(str1), HeapString(str2)) = (x.0.clone(), y.0.clone()) =>
             {
               push_and_win!(ReferenceValue(self.gc.concatenate_strings(str1, str2)))
             },

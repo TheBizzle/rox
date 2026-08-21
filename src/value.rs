@@ -19,11 +19,8 @@ impl Value {
       Self::Boolean(true) => "true".to_string(),
       Self::Boolean(false) => "false".to_string(),
       Self::Nil => "nil".to_string(),
-      Self::ReferenceValue(Reference(gc_obj_ptr)) => {
-        let gc_obj = unsafe { &**gc_obj_ptr };
-        match &gc_obj.object {
-          HeapString(str) => str.to_string(),
-        }
+      Self::ReferenceValue(Reference(heap_object)) => match &heap_object {
+        HeapString(str_ptr) => unsafe { &**str_ptr }.to_string(),
       },
     }
   }

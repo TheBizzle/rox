@@ -12,7 +12,8 @@ pub struct GcObject {
 impl GcObject {
   pub fn free(&self) {
     match &self.object {
-      HeapObject::HeapString(string) => {
+      HeapObject::HeapString(string_ptr) => {
+        let string = unsafe { &**string_ptr };
         let layout = Layout::array::<u8>(string.length as usize).unwrap();
         unsafe { dealloc(string.chars.cast_mut(), layout) };
       },
@@ -20,10 +21,11 @@ impl GcObject {
   }
 }
 
-pub struct Reference(pub *const GcObject);
+pub struct Reference(pub HeapObject);
 
+#[derive(Clone)]
 pub enum HeapObject {
-  HeapString(StringObj),
+  HeapString(*const StringObj),
 }
 use HeapObject::HeapString;
 
@@ -49,29 +51,40 @@ impl Gc {
     Self { objects: null_mut() }
   }
 
-  fn allocate_object(&mut self, reference: HeapObject) -> *mut GcObject {
-    let object = Box::new(GcObject { next: self.objects, object: reference });
-    let ptr = Box::into_raw(object);
+  fn allocate_object(&mut self, object: HeapObject) {
+    let gc_object = Box::new(GcObject { next: self.objects, object });
+    let ptr = Box::into_raw(gc_object);
     self.objects = ptr;
-    ptr
   }
 
-  fn allocate_string(&mut self, chars: *const u8, length: u32) -> *const GcObject {
-    self.allocate_object(HeapObject::HeapString(StringObj { chars, length }))
+  fn allocate_string(&mut self, chars: *const u8, len: usize) -> HeapObject {
+    let length = u32::try_from(len).unwrap();
+    let string_obj = StringObj { chars, length };
+    let string_ptr = Box::into_raw(Box::new(string_obj));
+
+    let heap_obj = HeapObject::HeapString(string_ptr);
+    self.allocate_object(heap_obj.clone());
+
+    heap_obj
   }
 
-  pub fn concatenate_strings(&mut self, str1: &StringObj, str2: &StringObj) -> Reference {
-    let length = str1.length + str2.length;
+  pub fn concatenate_strings(&mut self, string1: *const StringObj, string2: *const StringObj) -> Reference {
+    let str1 = unsafe { &*string1 };
+    let str2 = unsafe { &*string2 };
 
-    let layout = Layout::array::<u8>(length as usize).unwrap();
+    let length1 = str1.length as usize;
+    let length2 = str2.length as usize;
+    let length = length1 + length2;
+
+    let layout = Layout::array::<u8>(length).unwrap();
     let ptr = unsafe { alloc(layout) };
     if ptr.is_null() {
       handle_alloc_error(layout);
     }
 
     unsafe {
-      copy_nonoverlapping(str1.chars, ptr, str1.length as usize);
-      copy_nonoverlapping(str2.chars, ptr.add(str1.length as usize), str2.length as usize);
+      copy_nonoverlapping(str1.chars, ptr, length1);
+      copy_nonoverlapping(str2.chars, ptr.add(length1), length2);
     }
 
     Reference(self.allocate_string(ptr, length))
@@ -90,7 +103,7 @@ impl Gc {
       copy_nonoverlapping(substring.as_ptr(), ptr, length);
     }
 
-    let object = self.allocate_string(ptr, u32::try_from(length).unwrap());
+    let object = self.allocate_string(ptr, length);
     Reference(object)
   }
 
@@ -116,20 +129,13 @@ fn _free_chars(chars: *const u8, length: u32) {
 }
 
 pub fn refs_are_equal(a: &Reference, b: &Reference) -> bool {
-  let ax = unsafe { &*a.0 };
-  let bx = unsafe { &*b.0 };
-  heap_objects_are_equal(&ax.object, &bx.object)
-}
-
-pub fn heap_objects_are_equal(a: &HeapObject, b: &HeapObject) -> bool {
-  match (a, b) {
-    (
-      HeapString(StringObj { chars: chars1, length: length1 }),
-      HeapString(StringObj { chars: chars2, length: length2 }),
-    ) => {
+  match (&a.0, &b.0) {
+    (HeapString(ptr1), HeapString(ptr2)) => {
+      let (StringObj { chars: chars1, length: length1 }, StringObj { chars: chars2, length: length2 }) =
+        (unsafe { &**ptr1 }, unsafe { &**ptr2 });
       if length1 == length2 {
-        let a = unsafe { from_raw_parts(*chars1, *length1 as usize) };
-        let b = unsafe { from_raw_parts(*chars2, *length2 as usize) };
+        let a = unsafe { from_raw_parts(chars1, *length1 as usize) };
+        let b = unsafe { from_raw_parts(chars2, *length2 as usize) };
         a == b
       } else {
         false
