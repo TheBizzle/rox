@@ -14,7 +14,7 @@ impl GcObject {
     match &self.object {
       HeapObject::HeapString(string_ptr) => {
         let string = unsafe { &**string_ptr };
-        let layout = Layout::array::<u8>(string.length as usize).unwrap();
+        let layout = Layout::array::<u8>(string.length).unwrap();
         unsafe { dealloc(string.chars.cast_mut(), layout) };
       },
     }
@@ -32,12 +32,13 @@ use HeapObject::HeapString;
 #[repr(C)]
 pub struct StringObj {
   pub chars: *const u8,
-  pub length: u32,
+  pub length: usize,
+  pub hash: u32,
 }
 
 impl Display for StringObj {
   fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
-    let bytes = unsafe { from_raw_parts(self.chars, self.length as usize) };
+    let bytes = unsafe { from_raw_parts(self.chars, self.length) };
     write!(formatter, "\"{}\"", String::from_utf8(bytes.to_vec()).expect("Invalid UTF-8 bytes"))
   }
 }
@@ -57,9 +58,8 @@ impl Gc {
     self.objects = ptr;
   }
 
-  fn allocate_string(&mut self, chars: *const u8, len: usize) -> HeapObject {
-    let length = u32::try_from(len).unwrap();
-    let string_obj = StringObj { chars, length };
+  fn allocate_string(&mut self, chars: *const u8, length: usize, hash: u32) -> HeapObject {
+    let string_obj = StringObj { chars, length, hash };
     let string_ptr = Box::into_raw(Box::new(string_obj));
 
     let heap_obj = HeapObject::HeapString(string_ptr);
@@ -72,8 +72,8 @@ impl Gc {
     let str1 = unsafe { &*string1 };
     let str2 = unsafe { &*string2 };
 
-    let length1 = str1.length as usize;
-    let length2 = str2.length as usize;
+    let length1 = str1.length;
+    let length2 = str2.length;
     let length = length1 + length2;
 
     let layout = Layout::array::<u8>(length).unwrap();
