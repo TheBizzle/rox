@@ -7,6 +7,7 @@ pub mod vm;
 
 mod error;
 mod gc;
+mod hash_table;
 mod lexer;
 mod memory;
 mod parser;

@@ -4,6 +4,7 @@ use crate::memory::{free_array, grow_array, next_capacity};
 
 use crate::gc::{HeapObject::HeapString, Reference};
 
+#[derive(Clone)]
 pub enum Value {
   Boolean(bool),
   Double(f64),
