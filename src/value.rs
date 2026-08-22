@@ -1,6 +1,6 @@
 use std::ptr::null_mut;
 
-use crate::memory::{free_array, grow_array, grow_capacity};
+use crate::memory::{free_array, grow_array, next_capacity};
 
 use crate::gc::{HeapObject::HeapString, Reference};
 
@@ -55,7 +55,7 @@ impl ValueArray {
   pub fn write(&mut self, value: Value) {
     if self.capacity < self.count + 1 {
       let old_capacity = self.capacity;
-      self.capacity = grow_capacity!(old_capacity);
+      self.capacity = next_capacity!(old_capacity);
       self.values = unsafe { grow_array!(Value, self.values, old_capacity, self.capacity) };
     }
 

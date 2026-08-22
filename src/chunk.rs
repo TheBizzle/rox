@@ -1,6 +1,6 @@
 use std::ptr::null_mut;
 
-use crate::memory::{free_array, grow_array, grow_capacity};
+use crate::memory::{free_array, grow_array, next_capacity};
 use crate::value::{Value, ValueArray};
 
 #[derive(Debug)]
@@ -49,7 +49,7 @@ impl Chunk {
   pub fn write<T: Into<u8>>(&mut self, byte: T, line_num: u32) {
     if self.capacity < self.count + 1 {
       let old_capacity = self.capacity;
-      self.capacity = grow_capacity!(old_capacity);
+      self.capacity = next_capacity!(old_capacity);
       self.op_codes = unsafe { grow_array!(u8, self.op_codes, old_capacity, self.capacity) };
       self.line_nums = unsafe { grow_array!(u32, self.line_nums, old_capacity, self.capacity) };
     }

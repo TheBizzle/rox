@@ -13,7 +13,7 @@ macro_rules! grow_array {
   };
 }
 
-macro_rules! grow_capacity {
+macro_rules! next_capacity {
   ($old_capacity: expr) => {
     if $old_capacity < 8 {
       8
@@ -25,7 +25,7 @@ macro_rules! grow_capacity {
 
 pub(super) use free_array;
 pub(super) use grow_array;
-pub(super) use grow_capacity;
+pub(super) use next_capacity;
 
 pub unsafe fn reallocate<T>(pointer: *mut T, old_count: usize, new_count: usize) -> *mut T {
   if new_count == 0 {
