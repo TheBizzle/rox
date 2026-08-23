@@ -21,7 +21,7 @@ pub struct HashTable {
 enum Cell {
   NeverFilled,
   Tombstone,
-  Entry { key: *mut StringObj, value: Value },
+  Entry { key: *const StringObj, value: Value },
 }
 use Cell::{Entry, NeverFilled, Tombstone};
 
@@ -77,7 +77,7 @@ impl HashTable {
 
   #[allow(clippy::needless_pass_by_ref_mut)]
   #[allow(unused)]
-  fn delete(&mut self, key: *mut StringObj) -> bool {
+  fn delete(&mut self, key: *const StringObj) -> bool {
     if self.count == 0 {
       false
     } else {
@@ -94,7 +94,7 @@ impl HashTable {
   }
 
   #[allow(clippy::option_option)]
-  fn find_cell(&self, key_ptr: *mut StringObj) -> *mut Cell {
+  fn find_cell(&self, key_ptr: *const StringObj) -> *mut Cell {
     find_cell(self.cells_ptr, self.capacity, key_ptr)
   }
 
@@ -139,7 +139,7 @@ impl HashTable {
   }
 
   #[allow(unused)]
-  pub fn get(&self, key: *mut StringObj) -> Option<*const Value> {
+  pub fn get(&self, key: *const StringObj) -> Option<*const Value> {
     if self.count == 0 {
       None
     } else {
@@ -151,7 +151,7 @@ impl HashTable {
     }
   }
 
-  pub fn set(&mut self, key: *mut StringObj, value: Value) -> bool {
+  pub fn set(&mut self, key: *const StringObj, value: Value) -> bool {
     #[allow(clippy::cast_precision_loss)]
     if ((self.count + 1) as f64) > ((self.capacity as f64) * TABLE_MAX_LOAD) {
       self.adjust_capacity(next_capacity!(self.capacity));
@@ -177,7 +177,7 @@ impl HashTable {
 }
 
 #[allow(clippy::option_option)]
-fn find_cell(entry_opts: *mut Cell, capacity: usize, key_ptr: *mut StringObj) -> *mut Cell {
+fn find_cell(entry_opts: *mut Cell, capacity: usize, key_ptr: *const StringObj) -> *mut Cell {
   let key = unsafe { &*key_ptr };
   let mut index = (key.hash as usize) % capacity;
 
