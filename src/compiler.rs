@@ -282,7 +282,14 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn parse_variable(&mut self, error_message: &str) -> u8 {
-    self.parser.consume_dyn(|x| matches!(x, Identifier(_)), error_message);
+    let _ = self.parser.consume_dyn(
+      |x| match x {
+        Identifier(y) => Some(y.clone()),
+        _ => None,
+      },
+      error_message,
+    );
+
     self.make_ident_constant()
   }
 

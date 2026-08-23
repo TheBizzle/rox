@@ -50,12 +50,14 @@ impl Parser<'_> {
     }
   }
 
-  pub fn consume_dyn<F: FnOnce(&TokenType) -> bool>(&mut self, func: F, message: &str) {
-    if func(&self.current_token_opt.as_ref().unwrap().typ) {
+  pub fn consume_dyn<T, F: FnOnce(&TokenType) -> Option<T>>(&mut self, func: F, message: &str) -> Option<T> {
+    let t_opt = func(&self.current_token_opt.as_ref().unwrap().typ);
+    if t_opt.is_some() {
       self.advance();
     } else {
       self.error_at_current(message);
     }
+    t_opt
   }
 
   pub fn error_at_current(&mut self, message: &str) {
