@@ -168,16 +168,16 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
-  pub fn parse_expression(&mut self) {
+  fn parse_expression(&mut self) {
     self.parse_precedence(&Precedence::Assignment);
   }
 
-  pub fn parse_grouping(&mut self) {
+  fn parse_grouping(&mut self) {
     self.parse_expression();
     self.parser.consume(&RightParen, "Expect ')' after expression.");
   }
 
-  pub fn parse_literal(&mut self) {
+  fn parse_literal(&mut self) {
     match self.parser.previous_token_opt.as_ref().unwrap().typ {
       False => self.emit_byte(FalseCode),
       Nil => self.emit_byte(NilCode),
@@ -186,7 +186,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
-  pub fn parse_number(&mut self) {
+  fn parse_number(&mut self) {
     if let Some(Token { typ: Number(x), .. }) = self.parser.previous_token_opt {
       self.emit_constant(Double(x));
     }
@@ -208,7 +208,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
-  pub fn parse_string(&mut self) {
+  fn parse_string(&mut self) {
     let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
     let str_start = (prev_loc.start_index + 1) as usize;
     let length = (prev_loc.length - 2) as usize;
@@ -216,7 +216,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     self.emit_constant(ReferenceValue(str_ref));
   }
 
-  pub fn parse_unary(&mut self) {
+  fn parse_unary(&mut self) {
     let operator_type = self.parser.previous_token_opt.as_ref().unwrap().typ.clone();
 
     self.parse_precedence(&Precedence::Unary);
