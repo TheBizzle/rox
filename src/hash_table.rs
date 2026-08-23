@@ -76,8 +76,7 @@ impl HashTable {
   }
 
   #[allow(clippy::needless_pass_by_ref_mut)]
-  #[allow(unused)]
-  fn delete(&mut self, key: *const StringObj) -> bool {
+  pub fn delete(&mut self, key: *const StringObj) -> bool {
     if self.count == 0 {
       false
     } else {

@@ -52,13 +52,14 @@ impl Display for StringObj {
 }
 
 pub struct Gc {
+  pub(super) globals: HashTable,
   objects: *mut GcObject,
   strings: HashTable,
 }
 
 impl Gc {
   pub const fn new() -> Self {
-    Self { objects: null_mut(), strings: HashTable::new() }
+    Self { globals: HashTable::new(), objects: null_mut(), strings: HashTable::new() }
   }
 
   fn allocate_object(&mut self, object: HeapObject) {
@@ -147,6 +148,7 @@ impl Gc {
     }
     self.objects = null_mut();
 
+    self.globals.free();
     self.strings.free();
   }
 }

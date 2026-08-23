@@ -5,8 +5,9 @@ use crate::chunk::Chunk;
 use crate::disassembler::disassemble_chunk;
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, Divide, Equal as EqualCode, False as FalseCode, Greater as GreaterCode,
-  Less as LessCode, Multiply, Negate, Nil as NilCode, Not, Return as ReturnCode, Subtract, True as TrueCode,
+  self, Add, Constant, DefineGlobal, Divide, Equal as EqualCode, False as FalseCode, GetGlobal,
+  Greater as GreaterCode, Less as LessCode, Multiply, Negate, Nil as NilCode, Not, Pop, Print as PrintCode,
+  Return as ReturnCode, SetGlobal, Subtract, True as TrueCode,
 };
 
 use crate::parser::Parser;
@@ -15,8 +16,9 @@ use crate::gc::Gc;
 
 use crate::token::Token;
 use crate::token::TokenType::{
-  self, Bang, BangEqual, Eof, EqualEqual, False, Greater, GreaterEqual, LeftParen, Less, LessEqual,
-  LoxString, Minus, Nil, Number, Plus, RightParen, Slash, Star, True,
+  self, Bang, BangEqual, Class, Eof, Equal, EqualEqual, False, For, Fun, Greater, GreaterEqual, Identifier,
+  If, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Plus, Print, Return, RightParen, Semicolon,
+  Slash, Star, True, Var, While,
 };
 
 use crate::value::Value::{self, Double, ReferenceValue};
@@ -45,7 +47,7 @@ impl Precedence {
   }
 }
 
-type ParseFn<'a, 'b, 'c> = fn(&mut Compiler<'a, 'b, 'c>);
+type ParseFn<'a, 'b, 'c> = fn(&mut Compiler<'a, 'b, 'c>, bool);
 
 struct ParseRule<'a, 'b, 'c> {
   prefix: Option<ParseFn<'a, 'b, 'c>>,
@@ -78,6 +80,8 @@ fn rule_for<'a, 'b, 'c>(typ: &TokenType) -> ParseRule<'a, 'b, 'c> {
 
       False | Nil | True => (Some(Compiler::parse_literal), None, Precedence::Bupkis),
 
+      Identifier(_) => (Some(Compiler::parse_var_reference), None, Precedence::Bupkis),
+
       _ => (None, None, Precedence::Bupkis),
     };
 
@@ -94,8 +98,11 @@ pub fn compile(source: &str, chunk: &mut Chunk, gc: &mut Gc) -> bool {
   let mut compiler = Compiler::new(source, chunk, gc);
 
   compiler.parser.advance();
-  compiler.parse_expression();
-  compiler.parser.consume(&Eof, "Expect end of expression.");
+
+  while !compiler.token_is_a(&Eof) {
+    compiler.parse_declaration();
+  }
+
   compiler.end();
   !compiler.parser.had_error
 }
@@ -134,7 +141,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     self.compiling_chunk.add_constant(value)
   }
 
-  fn parse_binary(&mut self) {
+  fn parse_binary(&mut self, _can_assign: bool) {
     enum Bytes {
       Zero,
       One(OpCode),
@@ -168,16 +175,28 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
+  fn parse_declaration(&mut self) {
+    if self.token_is_a(&Var) {
+      self.parse_var_decl();
+    } else {
+      self.parse_statement();
+    }
+
+    if self.parser.is_panicking {
+      self.synchronize();
+    }
+  }
+
   fn parse_expression(&mut self) {
     self.parse_precedence(&Precedence::Assignment);
   }
 
-  fn parse_grouping(&mut self) {
+  fn parse_grouping(&mut self, _can_assign: bool) {
     self.parse_expression();
     self.parser.consume(&RightParen, "Expect ')' after expression.");
   }
 
-  fn parse_literal(&mut self) {
+  fn parse_literal(&mut self, _can_assign: bool) {
     match self.parser.previous_token_opt.as_ref().unwrap().typ {
       False => self.emit_byte(FalseCode),
       Nil => self.emit_byte(NilCode),
@@ -186,7 +205,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
-  fn parse_number(&mut self) {
+  fn parse_number(&mut self, _can_assign: bool) {
     if let Some(Token { typ: Number(x), .. }) = self.parser.previous_token_opt {
       self.emit_constant(Double(x));
     }
@@ -195,12 +214,16 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   fn parse_precedence(&mut self, p: &Precedence) {
     self.parser.advance();
     if let Some(prefix_rule) = rule_for(&self.parser.previous_token_opt.as_ref().unwrap().typ).prefix {
-      prefix_rule(self);
+      let can_assign = p <= &Precedence::Assignment;
+      prefix_rule(self, can_assign);
 
       while p <= &rule_for(&self.parser.current_token_opt.as_ref().unwrap().typ).precedence {
         self.parser.advance();
         if let Some(infix_rule) = rule_for(&self.parser.previous_token_opt.as_ref().unwrap().typ).infix {
-          infix_rule(self);
+          infix_rule(self, can_assign);
+        }
+        if can_assign && self.token_is_a(&Equal) {
+          self.parser.error("Invalid assignment target.");
         }
       }
     } else {
@@ -208,7 +231,19 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
-  fn parse_string(&mut self) {
+  fn parse_statement(&mut self) {
+    if self.token_is_a(&Print) {
+      self.parse_expression();
+      self.parser.consume(&Semicolon, "Expect ';' after value.");
+      self.emit_byte(PrintCode);
+    } else {
+      self.parse_expression();
+      self.parser.consume(&Semicolon, "Expect ';' after expression.");
+      self.emit_byte(Pop);
+    }
+  }
+
+  fn parse_string(&mut self, _can_assign: bool) {
     let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
     let str_start = (prev_loc.start_index + 1) as usize;
     let length = (prev_loc.length - 2) as usize;
@@ -216,7 +251,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     self.emit_constant(ReferenceValue(str_ref));
   }
 
-  fn parse_unary(&mut self) {
+  fn parse_unary(&mut self, _can_assign: bool) {
     let operator_type = self.parser.previous_token_opt.as_ref().unwrap().typ.clone();
 
     self.parse_precedence(&Precedence::Unary);
@@ -231,5 +266,70 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       },
       _ => {},
     }
+  }
+
+  fn parse_var_decl(&mut self) {
+    let global_var = self.parse_variable("Expect variable name.");
+
+    if self.token_is_a(&Equal) {
+      self.parse_expression();
+    } else {
+      self.emit_byte(NilCode);
+    }
+    self.parser.consume(&Semicolon, "Expect ';' after variable declaration.");
+
+    self.define_variable(global_var);
+  }
+
+  fn parse_variable(&mut self, error_message: &str) -> u8 {
+    self.parser.consume_dyn(|x| matches!(x, Identifier(_)), error_message);
+    self.make_ident_constant()
+  }
+
+  fn parse_var_reference(&mut self, can_assign: bool) {
+    self.make_named_variable(can_assign);
+  }
+
+  fn define_variable(&mut self, global_var: u8) {
+    self.emit_bytes(DefineGlobal, global_var);
+  }
+
+  fn make_ident_constant(&mut self) -> u8 {
+    let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
+    let reference = self.gc.copy_string(self.parser.source, loc.start_index as usize, loc.length as usize);
+    self.make_constant(ReferenceValue(reference))
+  }
+
+  fn make_named_variable(&mut self, can_assign: bool) {
+    let arg = self.make_ident_constant();
+
+    if can_assign && self.token_is_a(&Equal) {
+      self.parse_expression();
+      self.emit_bytes(SetGlobal, arg);
+    } else {
+      self.emit_bytes(GetGlobal, arg);
+    }
+  }
+
+  fn synchronize(&mut self) {
+    self.parser.is_panicking = false;
+
+    while self.parser.current_token_opt.as_ref().unwrap().typ != Eof
+      && self.parser.previous_token_opt.as_ref().unwrap().typ != Semicolon
+      && !matches!(
+        &self.parser.current_token_opt.as_ref().unwrap().typ,
+        Class | For | Fun | If | Print | Return | Var | While
+      )
+    {
+      self.parser.advance();
+    }
+  }
+
+  pub fn token_is_a(&mut self, typ: &TokenType) -> bool {
+    if &self.parser.current_token_opt.as_ref().unwrap().typ != typ {
+      return false;
+    }
+    self.parser.advance();
+    true
   }
 }

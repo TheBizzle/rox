@@ -9,11 +9,11 @@ use crate::compiler::compile;
 
 use crate::disassembler::disassemble_instruction;
 
-use crate::gc::{Gc, HeapObject::HeapString, refs_are_equal};
+use crate::gc::{Gc, HeapObject::HeapString, Reference, refs_are_equal};
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, Divide, Equal, False, Greater, Less, Multiply, Negate, Nil, Not, Return, Subtract,
-  True,
+  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, Greater, Less, Multiply, Negate, Nil,
+  Not, Pop, Print, Return, SetGlobal, Subtract, True,
 };
 
 use crate::value::Value::{self, Boolean, Double, Nil as NilValue, ReferenceValue};
@@ -149,6 +149,16 @@ impl VM {
       }};
     }
 
+    macro_rules! read_string {
+      () => {{
+        if let ReferenceValue(Reference(HeapString(str_obj_ptr))) = read_constant!() {
+          str_obj_ptr
+        } else {
+          exit(1);
+        }
+      }};
+    }
+
     macro_rules! push_and_win {
       ($x: expr) => {{
         let x = $x;
@@ -197,6 +207,12 @@ impl VM {
         Some(Constant) => {
           push_and_win!(read_constant!())
         },
+        Some(DefineGlobal) => {
+          let value = self.peek(0);
+          self.gc.globals.set(read_string!(), value);
+          let _ = self.pop();
+          Continue
+        },
         Some(Divide) => binary_op!(Double, /),
         Some(Equal) => {
           let b = self.pop();
@@ -204,6 +220,16 @@ impl VM {
           push_and_win!(Boolean(values_are_equal(a, b)))
         },
         Some(False) => push_and_win!(Boolean(false)),
+        Some(GetGlobal) => {
+          let name_ptr = read_string!();
+          if let Some(r) = self.gc.globals.get(name_ptr) {
+            let value = unsafe { &*r }.clone();
+            push_and_win!(value)
+          } else {
+            let name = unsafe { &*name_ptr };
+            runtime_error!("Undefined variable '{:?}'.", name.chars)
+          }
+        },
         Some(Greater) => binary_op!(Boolean, >),
         Some(Less) => binary_op!(Boolean, <),
         Some(Multiply) => binary_op!(Double, *),
@@ -219,9 +245,27 @@ impl VM {
         Some(Not) => {
           push_and_win!(Boolean(is_falsey(&self.pop())))
         },
-        Some(Return) => {
+        Some(Pop) => {
+          let _ = self.pop();
+          Continue
+        },
+        Some(Print) => {
           println!("{}", self.pop().stringify());
-          Done
+          Continue
+        },
+        Some(Return) => Done,
+        Some(SetGlobal) => {
+          let name_ptr = read_string!();
+          let name = unsafe { &*name_ptr };
+          let value = self.peek(0);
+          let is_binding_new = self.gc.globals.set(name, value);
+
+          if is_binding_new {
+            self.gc.globals.delete(name);
+            runtime_error!("Undefined variable '{:?}'.", name.chars)
+          } else {
+            Continue
+          }
         },
         Some(Subtract) => binary_op!(Double, -),
         Some(True) => push_and_win!(Boolean(true)),

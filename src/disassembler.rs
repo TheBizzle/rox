@@ -1,8 +1,8 @@
 use crate::chunk::Chunk;
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, Divide, Equal, False, Greater, Less, Multiply, Negate, Nil, Not, Return, Subtract,
-  True,
+  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, Greater, Less, Multiply, Negate, Nil,
+  Not, Pop, Print, Return, SetGlobal, Subtract, True,
 };
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
@@ -26,10 +26,10 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
 
   let ordinal = unsafe { *chunk.op_codes.add(offset) };
   match OpCode::from_repr(ordinal) {
-    Some(Constant) => constant_instruction(&Constant, chunk, offset),
+    Some(x @ (Constant | DefineGlobal | GetGlobal | SetGlobal)) => constant_instruction(&x, chunk, offset),
     Some(
-      x @ (Add | Divide | Equal | False | Greater | Less | Multiply | Negate | Nil | Not | Return | Subtract
-      | True),
+      x @ (Add | Divide | Equal | False | Greater | Less | Multiply | Negate | Nil | Not | Print | Pop
+      | Return | Subtract | True),
     ) => simple_instruction(&x, offset),
     None => {
       println!("Unknown opcode: {chunk:?} | {offset}");

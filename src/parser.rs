@@ -8,7 +8,7 @@ pub struct Parser<'a> {
   pub(super) current_token_opt: Option<Token>,
   pub(super) previous_token_opt: Option<Token>,
   pub(super) had_error: bool,
-  is_panicking: bool,
+  pub(super) is_panicking: bool,
   pub(super) source: &'a str,
 }
 
@@ -44,6 +44,14 @@ impl Parser<'_> {
 
   pub fn consume(&mut self, typ: &TokenType, message: &str) {
     if &self.current_token_opt.as_ref().unwrap().typ == typ {
+      self.advance();
+    } else {
+      self.error_at_current(message);
+    }
+  }
+
+  pub fn consume_dyn<F: FnOnce(&TokenType) -> bool>(&mut self, func: F, message: &str) {
+    if func(&self.current_token_opt.as_ref().unwrap().typ) {
       self.advance();
     } else {
       self.error_at_current(message);
