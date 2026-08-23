@@ -5,7 +5,7 @@ pub struct Token {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
+#[allow(unused)]
 pub struct SourceLoc {
   pub start_index: u32,
   pub line_num: u32,
