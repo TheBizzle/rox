@@ -34,11 +34,19 @@ fn run_repl(vm: &mut VM) {
     print!("> ");
     stdout.flush().unwrap();
     input.clear();
-    if let Err(error) = stdin.read_line(&mut input) {
-      println!("{error}");
-      exit(65);
+    match stdin.read_line(&mut input) {
+      Err(error) => {
+        println!("{error}");
+        exit(65);
+      },
+      Ok(0) => {
+        // Ctrl+d
+        exit(0);
+      },
+      Ok(_) => {
+        vm.interpret(&input);
+      },
     }
-    vm.interpret(&input);
   }
 }
 
