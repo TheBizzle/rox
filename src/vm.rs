@@ -204,9 +204,11 @@ impl VM {
             _ => runtime_error!("Operands must be two numbers or two strings."),
           }
         },
+
         Some(Constant) => {
           push_and_win!(read_constant!())
         },
+
         Some(DefineGlobal) => {
           let value = self.peek(0);
           self.gc.globals.set(read_string!(), value);
@@ -214,12 +216,15 @@ impl VM {
           Continue
         },
         Some(Divide) => binary_op!(Double, /),
+
         Some(Equal) => {
           let b = self.pop();
           let a = self.pop();
           push_and_win!(Boolean(values_are_equal(a, b)))
         },
+
         Some(False) => push_and_win!(Boolean(false)),
+
         Some(GetGlobal) => {
           let name_ptr = read_string!();
           if let Some(r) = self.gc.globals.get(name_ptr) {
@@ -231,8 +236,11 @@ impl VM {
           }
         },
         Some(Greater) => binary_op!(Boolean, >),
+
         Some(Less) => binary_op!(Boolean, <),
+
         Some(Multiply) => binary_op!(Double, *),
+
         Some(Negate) => {
           if let Double(x) = self.peek(0) {
             let _ = self.pop();
@@ -245,6 +253,7 @@ impl VM {
         Some(Not) => {
           push_and_win!(Boolean(is_falsey(&self.pop())))
         },
+
         Some(Pop) => {
           let _ = self.pop();
           Continue
@@ -253,7 +262,9 @@ impl VM {
           println!("{}", self.pop().stringify());
           Continue
         },
+
         Some(Return) => Done,
+
         Some(SetGlobal) => {
           let name_ptr = read_string!();
           let name = unsafe { &*name_ptr };
@@ -268,7 +279,9 @@ impl VM {
           }
         },
         Some(Subtract) => binary_op!(Double, -),
+
         Some(True) => push_and_win!(Boolean(true)),
+
         None => {
           println!("Unknown instruction enum ordinal: {ordinal}");
           exit(1);
