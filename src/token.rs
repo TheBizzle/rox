@@ -1,10 +1,10 @@
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Token {
   pub loc: SourceLoc,
   pub typ: TokenType,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[allow(unused)]
 pub struct SourceLoc {
   pub start_index: u32,
