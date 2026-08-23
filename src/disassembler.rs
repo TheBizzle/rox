@@ -1,8 +1,8 @@
 use crate::chunk::Chunk;
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, Greater, Less, Multiply, Negate, Nil,
-  Not, Pop, Print, Return, SetGlobal, Subtract, True,
+  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, GetLocal, Greater, Less, Multiply,
+  Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract, True,
 };
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
@@ -31,11 +31,18 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
       x @ (Add | Divide | Equal | False | Greater | Less | Multiply | Negate | Nil | Not | Print | Pop
       | Return | Subtract | True),
     ) => simple_instruction(&x, offset),
+    Some(x @ (GetLocal | SetLocal)) => byte_instruction(&x, chunk, offset),
     None => {
       println!("Unknown opcode: {chunk:?} | {offset}");
       offset + 1
     },
   }
+}
+
+fn byte_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize {
+  let slot_num = unsafe { *chunk.op_codes.add(offset + 1) };
+  println!("{op_code:<16?} {slot_num:>4}\n");
+  offset + 2
 }
 
 fn constant_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize {

@@ -5,9 +5,9 @@ use crate::chunk::Chunk;
 use crate::disassembler::disassemble_chunk;
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal as EqualCode, False as FalseCode, GetGlobal,
+  self, Add, Constant, DefineGlobal, Divide, Equal as EqualCode, False as FalseCode, GetGlobal, GetLocal,
   Greater as GreaterCode, Less as LessCode, Multiply, Negate, Nil as NilCode, Not, Pop, Print as PrintCode,
-  Return as ReturnCode, SetGlobal, Subtract, True as TrueCode,
+  Return as ReturnCode, SetGlobal, SetLocal, Subtract, True as TrueCode,
 };
 
 use crate::parser::Parser;
@@ -17,8 +17,8 @@ use crate::gc::Gc;
 use crate::token::Token;
 use crate::token::TokenType::{
   self, Bang, BangEqual, Class, Eof, Equal, EqualEqual, False, For, Fun, Greater, GreaterEqual, Identifier,
-  If, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Plus, Print, Return, RightParen, Semicolon,
-  Slash, Star, True, Var, While,
+  If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Plus, Print, Return, RightBrace,
+  RightParen, Semicolon, Slash, Star, True, Var, While,
 };
 
 use crate::value::Value::{self, Double, ReferenceValue};
@@ -88,8 +88,61 @@ fn rule_for<'a, 'b, 'c>(typ: &TokenType) -> ParseRule<'a, 'b, 'c> {
   ParseRule { prefix, infix, precedence }
 }
 
+#[derive(Debug)]
+#[allow(unused)]
+struct LocalVar {
+  name: String,
+  token: Token,
+  depth_opt: Option<u8>,
+}
+
+struct Program {
+  local_var_opts: Box<[Option<LocalVar>; u8::MAX as usize]>,
+  local_var_count: u8,
+  scope_depth: u8,
+}
+
+impl Program {
+  #[must_use]
+  pub fn new() -> Self {
+    let size = u8::MAX as usize;
+    let mut v = Vec::with_capacity(size);
+    v.resize_with(size, || None);
+    let local_var_opts = v.try_into().expect("Length must be exactly `u8::MAX`");
+
+    Self { local_var_opts, local_var_count: 0, scope_depth: 0 }
+  }
+
+  pub const fn begin_scope(&mut self) {
+    self.scope_depth += 1;
+  }
+
+  pub fn end_scope(&mut self) -> Vec<OpCode> {
+    self.scope_depth -= 1;
+
+    let mut op_codes = Vec::new();
+
+    while self.local_var_count > 0
+      && let index = (self.local_var_count - 1) as usize
+      && let Some(depth) = self.local_var_opts[index].as_ref().unwrap().depth_opt
+      && depth > self.scope_depth
+    {
+      op_codes.push(Pop);
+      self.local_var_count -= 1;
+    }
+
+    op_codes
+  }
+
+  fn mark_latest_var_initialized(&mut self) {
+    let index = (self.local_var_count - 1) as usize;
+    let _ = self.local_var_opts[index].as_mut().unwrap().depth_opt.insert(self.scope_depth);
+  }
+}
+
 struct Compiler<'a, 'b, 'c> {
   parser: Parser<'a>,
+  program: Program,
   compiling_chunk: &'b mut Chunk,
   gc: &'c mut Gc,
 }
@@ -109,7 +162,7 @@ pub fn compile(source: &str, chunk: &mut Chunk, gc: &mut Gc) -> bool {
 
 impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   pub fn new(source: &'a str, chunk: &'b mut Chunk, gc: &'c mut Gc) -> Self {
-    Compiler { parser: Parser::new(source), compiling_chunk: chunk, gc }
+    Compiler { parser: Parser::new(source), program: Program::new(), compiling_chunk: chunk, gc }
   }
 
   fn end(&mut self) {
@@ -175,6 +228,13 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
+  fn parse_block(&mut self) {
+    while !matches!(self.parser.current_token_opt.as_ref().unwrap().typ, RightBrace | Eof) {
+      self.parse_declaration();
+    }
+    self.parser.consume(&RightBrace, "Expect '}' after block.");
+  }
+
   fn parse_declaration(&mut self) {
     if self.token_is_a(&Var) {
       self.parse_var_decl();
@@ -236,6 +296,12 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       self.parse_expression();
       self.parser.consume(&Semicolon, "Expect ';' after value.");
       self.emit_byte(PrintCode);
+    } else if self.token_is_a(&LeftBrace) {
+      self.program.begin_scope();
+      self.parse_block();
+      for op_code in self.program.end_scope() {
+        self.emit_byte(op_code);
+      }
     } else {
       self.parse_expression();
       self.parser.consume(&Semicolon, "Expect ';' after expression.");
@@ -282,7 +348,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn parse_variable(&mut self, error_message: &str) -> u8 {
-    let _ = self.parser.consume_dyn(
+    let name_opt = self.parser.consume_dyn(
       |x| match x {
         Identifier(y) => Some(y.clone()),
         _ => None,
@@ -290,15 +356,56 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       error_message,
     );
 
-    self.make_ident_constant()
+    if let Some(name) = name_opt {
+      self.declare_variable(name);
+      if self.program.scope_depth > 0 {
+        0
+      } else {
+        self.make_ident_constant()
+      }
+    } else {
+      0
+    }
   }
 
   fn parse_var_reference(&mut self, can_assign: bool) {
     self.make_named_variable(can_assign);
   }
 
+  fn add_local(&mut self, name: String) {
+    if self.program.local_var_count == u8::MAX {
+      self.parser.error("Too many local variables in function.");
+    } else {
+      let token = self.parser.previous_token_opt.clone().unwrap();
+      let local = LocalVar { name, token, depth_opt: None };
+      let index = self.program.local_var_count as usize;
+      self.program.local_var_opts[index] = Some(local);
+      self.program.local_var_count += 1;
+    }
+  }
+
+  fn declare_variable(&mut self, name: String) {
+    if self.program.scope_depth > 0 {
+      for i in (0..self.program.local_var_count).rev() {
+        let local = self.program.local_var_opts[i as usize].as_ref().unwrap();
+        if let Some(depth) = local.depth_opt
+          && depth < self.program.scope_depth
+        {
+          break; // In this case, we're just shadowing, so no worries. --Jason B. (8/23/26)
+        } else if name == local.name {
+          self.parser.error("Already a variable with this name in this scope.");
+        }
+      }
+      self.add_local(name);
+    }
+  }
+
   fn define_variable(&mut self, global_var: u8) {
-    self.emit_bytes(DefineGlobal, global_var);
+    if self.program.scope_depth == 0 {
+      self.emit_bytes(DefineGlobal, global_var);
+    } else {
+      self.program.mark_latest_var_initialized();
+    }
   }
 
   fn make_ident_constant(&mut self) -> u8 {
@@ -308,14 +415,33 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn make_named_variable(&mut self, can_assign: bool) {
-    let arg = self.make_ident_constant();
+    let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
+    let name = &self.parser.source[(loc.start_index as usize)..((loc.start_index + loc.length) as usize)];
+    let (arg, get_op, set_op) = self.resolve_local(name).map_or_else(
+      || (self.make_ident_constant(), GetGlobal, SetGlobal),
+      |resolved| (resolved, GetLocal, SetLocal),
+    );
 
     if can_assign && self.token_is_a(&Equal) {
       self.parse_expression();
-      self.emit_bytes(SetGlobal, arg);
+      self.emit_bytes(set_op, arg);
     } else {
-      self.emit_bytes(GetGlobal, arg);
+      self.emit_bytes(get_op, arg);
     }
+  }
+
+  fn resolve_local(&mut self, name: &str) -> Option<u8> {
+    for i in (0..self.program.local_var_count).rev() {
+      let local = self.program.local_var_opts[i as usize].as_ref().unwrap();
+      if name == local.name {
+        if local.depth_opt.is_none() {
+          self.parser.error("Can't read local variable in its own initializer.");
+        } else {
+          return Some(i);
+        }
+      }
+    }
+    None
   }
 
   fn synchronize(&mut self) {

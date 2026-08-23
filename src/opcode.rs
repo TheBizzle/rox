@@ -10,6 +10,7 @@ pub enum OpCode {
   Equal,
   False,
   GetGlobal,
+  GetLocal,
   Greater,
   Less,
   Multiply,
@@ -20,6 +21,7 @@ pub enum OpCode {
   Print,
   Return,
   SetGlobal,
+  SetLocal,
   Subtract,
   True,
 }

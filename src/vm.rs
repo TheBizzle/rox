@@ -12,8 +12,8 @@ use crate::disassembler::disassemble_instruction;
 use crate::gc::{Gc, HeapObject::HeapString, Reference, refs_are_equal};
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, Greater, Less, Multiply, Negate, Nil,
-  Not, Pop, Print, Return, SetGlobal, Subtract, True,
+  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, GetLocal, Greater, Less, Multiply,
+  Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract, True,
 };
 
 use crate::value::Value::{self, Boolean, Double, Nil as NilValue, ReferenceValue};
@@ -235,6 +235,11 @@ impl VM {
             runtime_error!("Undefined variable '{:?}'.", name.chars)
           }
         },
+        Some(GetLocal) => {
+          let slot_num = read_byte!();
+          let value = unsafe { &*self.stack_addr.add(slot_num as usize) }.clone();
+          push_and_win!(value)
+        },
         Some(Greater) => binary_op!(Boolean, >),
 
         Some(Less) => binary_op!(Boolean, <),
@@ -277,6 +282,12 @@ impl VM {
           } else {
             Continue
           }
+        },
+        Some(SetLocal) => {
+          let slot_num = read_byte!();
+          let value = self.peek(0);
+          unsafe { *self.stack_top.add(slot_num as usize) = value };
+          Continue
         },
         Some(Subtract) => binary_op!(Double, -),
 
