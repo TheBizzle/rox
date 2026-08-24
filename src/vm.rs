@@ -310,7 +310,7 @@ impl VM {
         Some(SetLocal) => {
           let slot_num = read_u8!();
           let value = self.peek(0);
-          unsafe { *self.stack_top.add(slot_num as usize) = value };
+          unsafe { *self.stack_addr.add(slot_num as usize) = value };
           Continue
         },
         Some(Subtract) => binary_op!(Double, -),
