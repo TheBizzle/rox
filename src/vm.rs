@@ -134,7 +134,7 @@ impl VM {
       }};
     }
 
-    macro_rules! read_byte {
+    macro_rules! read_u8 {
       () => {{
         let byte = unsafe { *self.inst_ptr };
         self.inst_ptr = unsafe { self.inst_ptr.add(1) };
@@ -144,7 +144,7 @@ impl VM {
 
     macro_rules! read_constant {
       () => {{
-        let byte = read_byte!() as usize;
+        let byte = read_u8!() as usize;
         unsafe { ptr::read((*self.chunk_opt.unwrap()).constants.values.add(byte)) }
       }};
     }
@@ -182,7 +182,7 @@ impl VM {
         disassemble_instruction(chunk, offset);
       }
 
-      let ordinal = read_byte!();
+      let ordinal = read_u8!();
 
       let progress_state = match OpCode::from_repr(ordinal) {
         Some(Add) => {
@@ -236,7 +236,7 @@ impl VM {
           }
         },
         Some(GetLocal) => {
-          let slot_num = read_byte!();
+          let slot_num = read_u8!();
           let value = unsafe { &*self.stack_addr.add(slot_num as usize) }.clone();
           push_and_win!(value)
         },
@@ -284,7 +284,7 @@ impl VM {
           }
         },
         Some(SetLocal) => {
-          let slot_num = read_byte!();
+          let slot_num = read_u8!();
           let value = self.peek(0);
           unsafe { *self.stack_top.add(slot_num as usize) = value };
           Continue
