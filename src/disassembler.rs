@@ -41,7 +41,7 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
 
 fn byte_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize {
   let slot_num = unsafe { *chunk.op_codes.add(offset + 1) };
-  println!("{op_code:<16?} {slot_num:>4}\n");
+  println!("{op_code:<16?} {slot_num:>4}");
   offset + 2
 }
 
