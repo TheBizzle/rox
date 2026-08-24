@@ -12,8 +12,8 @@ use crate::disassembler::disassemble_instruction;
 use crate::gc::{Gc, HeapObject::HeapString, Reference, refs_are_equal};
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, GetLocal, Greater, Less, Multiply,
-  Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract, True,
+  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, GetLocal, Greater, Jump, JumpIfFalse,
+  Less, Loop, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract, True,
 };
 
 use crate::value::Value::{self, Boolean, Double, Nil as NilValue, ReferenceValue};
@@ -142,6 +142,10 @@ impl VM {
       }};
     }
 
+    macro_rules! read_u16 {
+      () => {{ u16::from_be_bytes([read_u8!(), read_u8!()]) }};
+    }
+
     macro_rules! read_constant {
       () => {{
         let byte = read_u8!() as usize;
@@ -242,7 +246,27 @@ impl VM {
         },
         Some(Greater) => binary_op!(Boolean, >),
 
+        Some(Jump) => {
+          let offset = read_u16!();
+          unsafe {
+            self.inst_ptr = self.inst_ptr.add(offset as usize);
+          }
+          Continue
+        },
+        Some(JumpIfFalse) => {
+          let offset = read_u16!() as usize;
+          if is_falsey(&self.peek(0)) {
+            self.inst_ptr = unsafe { self.inst_ptr.add(offset) };
+          }
+          Continue
+        },
+
         Some(Less) => binary_op!(Boolean, <),
+        Some(Loop) => {
+          let offset = read_u16!() as usize;
+          self.inst_ptr = unsafe { self.inst_ptr.sub(offset) };
+          Continue
+        },
 
         Some(Multiply) => binary_op!(Double, *),
 

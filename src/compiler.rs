@@ -6,8 +6,8 @@ use crate::disassembler::disassemble_chunk;
 
 use crate::opcode::OpCode::{
   self, Add, Constant, DefineGlobal, Divide, Equal as EqualCode, False as FalseCode, GetGlobal, GetLocal,
-  Greater as GreaterCode, Less as LessCode, Multiply, Negate, Nil as NilCode, Not, Pop, Print as PrintCode,
-  Return as ReturnCode, SetGlobal, SetLocal, Subtract, True as TrueCode,
+  Greater as GreaterCode, Jump, JumpIfFalse, Less as LessCode, Loop, Multiply, Negate, Nil as NilCode, Not,
+  Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, Subtract, True as TrueCode,
 };
 
 use crate::parser::Parser;
@@ -16,14 +16,16 @@ use crate::gc::Gc;
 
 use crate::token::Token;
 use crate::token::TokenType::{
-  self, Bang, BangEqual, Class, Eof, Equal, EqualEqual, False, For, Fun, Greater, GreaterEqual, Identifier,
-  If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Plus, Print, Return, RightBrace,
-  RightParen, Semicolon, Slash, Star, True, Var, While,
+  self, And, Bang, BangEqual, Class, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater, GreaterEqual,
+  Identifier, If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Or, Plus, Print,
+  Return, RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
 };
 
 use crate::value::Value::{self, Double, ReferenceValue};
 
 const IS_DEBUGGING: bool = true;
+
+struct JumpTarget(usize);
 
 #[derive(FromRepr, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -69,6 +71,10 @@ fn rule_for<'a, 'b, 'c>(typ: &TokenType) -> ParseRule<'a, 'b, 'c> {
       },
 
       BangEqual | EqualEqual => (None, Some(Compiler::parse_binary), Precedence::Equality),
+
+      And => (None, Some(Compiler::parse_and), Precedence::And),
+
+      Or => (None, Some(Compiler::parse_or), Precedence::Or),
 
       Number(_) => (Some(Compiler::parse_number), None, Precedence::Bupkis),
 
@@ -186,12 +192,43 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     self.emit_bytes(Constant, constant);
   }
 
+  fn emit_jump<T: Into<u8>>(&mut self, instruction: T) -> JumpTarget {
+    self.emit_byte(instruction);
+    self.emit_byte(0xff);
+    self.emit_byte(0xff);
+    JumpTarget(self.compiling_chunk.count - 2)
+  }
+
+  fn emit_loop(&mut self, jump_target: &JumpTarget) {
+    let JumpTarget(loop_start) = jump_target;
+
+    self.emit_byte(Loop);
+
+    let offset = self.compiling_chunk.count - loop_start + 2;
+
+    if offset > (u16::MAX as usize) {
+      self.parser.error("Loop body too large.");
+    }
+
+    self.emit_byte(u8::try_from((offset >> 8) & 0xff).unwrap());
+    self.emit_byte(u8::try_from(offset & 0xff).unwrap());
+  }
+
   fn emit_return(&mut self) {
     self.emit_byte(ReturnCode);
   }
 
   fn make_constant(&mut self, value: Value) -> u8 {
     self.compiling_chunk.add_constant(value)
+  }
+
+  fn parse_and(&mut self, _can_assign: bool) {
+    let end_jt = self.emit_jump(JumpIfFalse);
+
+    self.emit_byte(Pop);
+    self.parse_precedence(&Precedence::And);
+
+    self.fill_in_jump_target(&end_jt);
   }
 
   fn parse_binary(&mut self, _can_assign: bool) {
@@ -251,9 +288,81 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     self.parse_precedence(&Precedence::Assignment);
   }
 
+  fn parse_expr_stmt(&mut self) {
+    self.parse_expression();
+    self.parser.consume(&Semicolon, "Expect ';' after expression.");
+    self.emit_byte(Pop);
+  }
+
+  fn parse_for(&mut self) {
+    self.program.begin_scope();
+
+    self.parser.consume(&LeftParen, "Expect '(' after 'for'.");
+
+    if self.token_is_a(&Var) {
+      self.parse_var_decl();
+    } else if !self.token_is_a(&Semicolon) {
+      self.parse_expr_stmt();
+    }
+
+    let mut loop_start_jt = JumpTarget(self.compiling_chunk.count);
+
+    let mut exit_jt_opt = None;
+    if !self.token_is_a(&Semicolon) {
+      self.parse_expression();
+      self.parser.consume(&Semicolon, "Expect ';' after loop condition.");
+      let _ = exit_jt_opt.insert(self.emit_jump(JumpIfFalse));
+      self.emit_byte(Pop);
+    }
+
+    if !self.token_is_a(&RightParen) {
+      let body_jt = self.emit_jump(Jump);
+      let inc_start_jt = JumpTarget(self.compiling_chunk.count);
+
+      self.parse_expression();
+      self.emit_byte(Pop);
+      self.parser.consume(&RightParen, "Expect ')' after for clauses.");
+
+      self.emit_loop(&loop_start_jt);
+      loop_start_jt = inc_start_jt;
+      self.fill_in_jump_target(&body_jt);
+    }
+
+    self.parse_statement();
+    self.emit_loop(&loop_start_jt);
+
+    if let Some(exit_jt) = exit_jt_opt {
+      self.fill_in_jump_target(&exit_jt);
+      self.emit_byte(Pop); // Discards the condition --Jason B. (8/24/26)
+    }
+
+    for op_code in self.program.end_scope() {
+      self.emit_byte(op_code);
+    }
+  }
+
   fn parse_grouping(&mut self, _can_assign: bool) {
     self.parse_expression();
     self.parser.consume(&RightParen, "Expect ')' after expression.");
+  }
+
+  fn parse_if_else(&mut self) {
+    self.parser.consume(&LeftParen, "Expect '(' after 'if'.");
+    self.parse_expression();
+    self.parser.consume(&RightParen, "Expect ')' after condition.");
+
+    let consequent_jt = self.emit_jump(JumpIfFalse);
+    self.emit_byte(Pop);
+    self.parse_statement();
+    let alternative_jt = self.emit_jump(Jump);
+    self.fill_in_jump_target(&consequent_jt);
+
+    self.emit_byte(Pop);
+    if self.token_is_a(&Else) {
+      self.parse_statement();
+    }
+
+    self.fill_in_jump_target(&alternative_jt);
   }
 
   fn parse_literal(&mut self, _can_assign: bool) {
@@ -269,6 +378,17 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     if let Some(Token { typ: Number(x), .. }) = self.parser.previous_token_opt {
       self.emit_constant(Double(x));
     }
+  }
+
+  fn parse_or(&mut self, _can_assign: bool) {
+    let else_jt = self.emit_jump(JumpIfFalse);
+    let end_jt = self.emit_jump(Jump);
+    self.fill_in_jump_target(&else_jt);
+
+    self.emit_byte(Pop);
+    self.parse_precedence(&Precedence::Or);
+
+    self.fill_in_jump_target(&end_jt);
   }
 
   fn parse_precedence(&mut self, p: &Precedence) {
@@ -296,6 +416,12 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       self.parse_expression();
       self.parser.consume(&Semicolon, "Expect ';' after value.");
       self.emit_byte(PrintCode);
+    } else if self.token_is_a(&If) {
+      self.parse_if_else();
+    } else if self.token_is_a(&For) {
+      self.parse_for();
+    } else if self.token_is_a(&While) {
+      self.parse_while();
     } else if self.token_is_a(&LeftBrace) {
       self.program.begin_scope();
       self.parse_block();
@@ -303,9 +429,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         self.emit_byte(op_code);
       }
     } else {
-      self.parse_expression();
-      self.parser.consume(&Semicolon, "Expect ';' after expression.");
-      self.emit_byte(Pop);
+      self.parse_expr_stmt();
     }
   }
 
@@ -372,6 +496,24 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     self.make_named_variable(can_assign);
   }
 
+  fn parse_while(&mut self) {
+    let loop_start_jt = JumpTarget(self.compiling_chunk.count);
+
+    self.parser.consume(&LeftParen, "Expect '(' after 'while'.");
+    self.parse_expression();
+    self.parser.consume(&RightParen, "Expect ')' after condition.");
+
+    let exit_jt = self.emit_jump(JumpIfFalse);
+    self.emit_byte(Pop);
+    self.parse_statement();
+    self.emit_loop(&loop_start_jt);
+
+    // The `pop` in this chunk is the same as the one above; it's simply that we need to pop the
+    // condition, whether we continue into the `while` body or not. --Jason B. (8/24/26)
+    self.fill_in_jump_target(&exit_jt);
+    self.emit_byte(Pop);
+  }
+
   fn add_local(&mut self, name: String) {
     if self.program.local_var_count == u8::MAX {
       self.parser.error("Too many local variables in function.");
@@ -405,6 +547,20 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       self.emit_bytes(DefineGlobal, global_var);
     } else {
       self.program.mark_latest_var_initialized();
+    }
+  }
+
+  fn fill_in_jump_target(&mut self, jump_target: &JumpTarget) {
+    let JumpTarget(offset) = jump_target;
+    let jt = self.compiling_chunk.count - offset - 2;
+
+    if jt > (u16::MAX as usize) {
+      self.parser.error("Too much code to jump over.");
+    }
+
+    unsafe {
+      *self.compiling_chunk.op_codes.add(*offset) = u8::try_from((jt >> 8) & 0xff).unwrap();
+      *self.compiling_chunk.op_codes.add(offset + 1) = u8::try_from(jt & 0xff).unwrap();
     }
   }
 

@@ -1,8 +1,8 @@
 use crate::chunk::Chunk;
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, GetLocal, Greater, Less, Multiply,
-  Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract, True,
+  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, GetLocal, Greater, Jump, JumpIfFalse,
+  Less, Loop, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract, True,
 };
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
@@ -32,6 +32,7 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
       | Return | Subtract | True),
     ) => simple_instruction(&x, offset),
     Some(x @ (GetLocal | SetLocal)) => byte_instruction(&x, chunk, offset),
+    Some(x @ (Jump | JumpIfFalse | Loop)) => jump_instruction(&x, 1, chunk, offset),
     None => {
       println!("Unknown opcode: {chunk:?} | {offset}");
       offset + 1
@@ -50,6 +51,14 @@ fn constant_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize
   let value_str = unsafe { (*chunk.constants.values.add(constant_index as usize)).stringify() };
   println!("{op_code:<16?} {constant_index:>4} '{value_str}'");
   offset + 2
+}
+
+fn jump_instruction(op_code: &OpCode, sign: u32, chunk: &Chunk, offset: usize) -> usize {
+  let upper_bits = unsafe { u16::from(*chunk.op_codes.add(offset + 1)) } << 8;
+  let lower_bits = unsafe { u16::from(*chunk.op_codes.add(offset + 2)) };
+  let jump_target = upper_bits | lower_bits;
+  println!("{op_code:<16?} {offset:>4} -> {}", offset + 3 + (sign as usize) * (jump_target as usize));
+  offset + 3
 }
 
 fn simple_instruction(op_code: &OpCode, offset: usize) -> usize {
