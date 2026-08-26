@@ -27,7 +27,7 @@ impl Value {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ValueArray {
   pub count: u8,
   capacity: u8,

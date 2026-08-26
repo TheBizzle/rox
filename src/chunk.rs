@@ -3,7 +3,7 @@ use std::ptr::null_mut;
 use crate::memory::{free_array, grow_array, next_capacity};
 use crate::value::{Value, ValueArray};
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct Chunk {
   pub count: usize,
   capacity: usize,
