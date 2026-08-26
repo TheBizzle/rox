@@ -5,7 +5,7 @@ use std::slice::from_raw_parts;
 
 use crate::hash_table::HashTable;
 
-use crate::memory::free_array;
+use crate::memory::{Freeable, free_array};
 
 use crate::value::Value::Nil;
 
@@ -15,15 +15,9 @@ pub struct GcObject {
   pub object: HeapObject,
 }
 
-impl GcObject {
-  pub fn free(&self) {
-    match &self.object {
-      HeapObject::HeapString(string_ptr) => {
-        let string = unsafe { &**string_ptr };
-        let layout = Layout::array::<u8>(string.length).unwrap();
-        unsafe { dealloc(string.chars.cast_mut(), layout) };
-      },
-    }
+impl Freeable for GcObject {
+  fn free(&mut self) {
+    self.object.free();
   }
 }
 
@@ -32,9 +26,19 @@ pub struct Reference(pub HeapObject);
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum HeapObject {
-  HeapString(*const StringObj),
+  HeapString(*mut StringObj),
 }
 use HeapObject::HeapString;
+
+impl Freeable for HeapObject {
+  fn free(&mut self) {
+    match &self {
+      HeapString(string_ptr) => {
+        unsafe { &mut **string_ptr }.free();
+      },
+    }
+  }
+}
 
 #[derive(Eq, PartialEq)]
 #[repr(C)]
@@ -48,6 +52,13 @@ impl Display for StringObj {
   fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
     let bytes = unsafe { from_raw_parts(self.chars, self.length) };
     write!(formatter, "\"{}\"", String::from_utf8(bytes.to_vec()).expect("Invalid UTF-8 bytes"))
+  }
+}
+
+impl Freeable for StringObj {
+  fn free(&mut self) {
+    let layout = Layout::array::<u8>(self.length).unwrap();
+    unsafe { dealloc(self.chars.cast_mut(), layout) };
   }
 }
 
@@ -72,7 +83,7 @@ impl Gc {
     let string_obj = StringObj { chars, length, hash };
     let string_ptr = Box::into_raw(Box::new(string_obj));
 
-    let heap_obj = HeapObject::HeapString(string_ptr);
+    let heap_obj = HeapString(string_ptr);
     self.allocate_object(heap_obj.clone());
 
     self.strings.set(string_ptr, Nil);
@@ -106,7 +117,7 @@ impl Gc {
       unsafe {
         free_array!(u8, ptr, length);
       }
-      Reference(HeapString(interned))
+      Reference(HeapString(interned.cast_mut()))
     } else {
       Reference(self.allocate_string(ptr, length, hash))
     }
@@ -129,7 +140,7 @@ impl Gc {
     let hash = hash_string(ptr, length);
     #[allow(clippy::option_if_let_else)]
     if let Some(interned) = self.strings.find_string(ptr, length, hash) {
-      Reference(HeapString(interned))
+      Reference(HeapString(interned.cast_mut()))
     } else {
       let object = self.allocate_string(ptr, length, hash);
       Reference(object)

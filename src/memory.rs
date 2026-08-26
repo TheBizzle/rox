@@ -27,6 +27,10 @@ pub(super) use free_array;
 pub(super) use grow_array;
 pub(super) use next_capacity;
 
+pub trait Freeable {
+  fn free(&mut self);
+}
+
 pub unsafe fn reallocate<T>(pointer: *mut T, old_count: usize, new_count: usize) -> *mut T {
   if new_count == 0 {
     if !pointer.is_null() {
