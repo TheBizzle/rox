@@ -35,6 +35,8 @@ impl Freeable for HeapObject {
     match &self {
       HeapString(string_ptr) => {
         unsafe { &mut **string_ptr }.free();
+        let layout = Layout::new::<StringObj>();
+        unsafe { dealloc(string_ptr.cast::<u8>(), layout) };
       },
     }
   }
