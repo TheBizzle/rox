@@ -1,8 +1,9 @@
 use crate::chunk::Chunk;
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, GetLocal, Greater, Jump, JumpIfFalse,
-  Less, Loop, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract, True,
+  self, Add, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal, GetLocal, Greater, Jump,
+  JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract,
+  True,
 };
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
@@ -31,7 +32,7 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
       x @ (Add | Divide | Equal | False | Greater | Less | Multiply | Negate | Nil | Not | Print | Pop
       | Return | Subtract | True),
     ) => simple_instruction(&x, offset),
-    Some(x @ (GetLocal | SetLocal)) => byte_instruction(&x, chunk, offset),
+    Some(x @ (FnCall | GetLocal | SetLocal)) => byte_instruction(&x, chunk, offset),
     Some(x @ (Jump | JumpIfFalse | Loop)) => jump_instruction(&x, 1, chunk, offset),
     None => {
       println!("Unknown opcode: {chunk:?} | {offset}");

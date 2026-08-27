@@ -2,9 +2,10 @@ use std::ptr::null_mut;
 
 use crate::memory::{free_array, grow_array, next_capacity};
 
-use crate::gc::{HeapObject::HeapString, Reference};
+use crate::gc::HeapObject::{HeapFunction, HeapNativeFn, HeapString};
+use crate::gc::Reference;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Value {
   Boolean(bool),
   Double(f64),
@@ -20,7 +21,9 @@ impl Value {
       Self::Boolean(true) => "true".to_string(),
       Self::Boolean(false) => "false".to_string(),
       Self::Nil => "nil".to_string(),
-      Self::ReferenceValue(Reference(heap_object)) => match &heap_object {
+      Self::ReferenceValue(Reference(heap_object)) => match heap_object {
+        HeapFunction(fn_ptr) => unsafe { &**fn_ptr }.to_string(),
+        HeapNativeFn(native_fn_ptr) => unsafe { &**native_fn_ptr }.to_string(),
         HeapString(str_ptr) => unsafe { &**str_ptr }.to_string(),
       },
     }

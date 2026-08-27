@@ -1,25 +1,35 @@
 use std::array;
+use std::fmt::Arguments;
 use std::process::exit;
 use std::ptr::{self, null_mut};
 use std::slice;
+use std::sync::LazyLock;
+use std::time::Instant;
 
-use crate::chunk::Chunk;
-
-use crate::compiler::compile;
+use crate::compiler::{
+  FunctionKind::{self, Function, Script},
+  compile,
+};
 
 use crate::disassembler::disassemble_instruction;
 
-use crate::gc::{Gc, HeapObject::HeapString, Reference, refs_are_equal};
+use crate::gc::FunctionObj::{self, MainScript, UserDefined};
+use crate::gc::HeapObject::{HeapFunction, HeapNativeFn, HeapString};
+use crate::gc::{Gc, NativeFnObj, Reference, refs_are_equal};
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal, False, GetGlobal, GetLocal, Greater, Jump, JumpIfFalse,
-  Less, Loop, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract, True,
+  self, Add, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal, GetLocal, Greater, Jump,
+  JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract,
+  True,
 };
 
 use crate::value::Value::{self, Boolean, Double, Nil as NilValue, ReferenceValue};
 
+const FRAMES_MAX: usize = 64;
 const IS_DEBUGGING: bool = true;
-const STACK_MAX: usize = 256;
+const STACK_MAX: usize = FRAMES_MAX * (u8::MAX as usize + 1);
+
+static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 #[derive(Eq, PartialEq)]
 pub enum Interpretation {
@@ -29,30 +39,63 @@ pub enum Interpretation {
 }
 use Interpretation::{CompilationError, RuntimeError, Success};
 
+#[derive(Debug)]
+#[allow(clippy::struct_field_names)]
+pub struct CallFrame {
+  function_ptr: *mut FunctionObj,
+  inst_ptr: *mut u8,
+  slots_ptr: *mut Value,
+}
+
+impl Default for CallFrame {
+  fn default() -> Self {
+    Self { function_ptr: null_mut(), inst_ptr: null_mut(), slots_ptr: null_mut() }
+  }
+}
+
 // Need to hold onto `_stack`, so Rust doesn't overwrite its memory --Jason B. (8/16/26)
 pub struct VM {
-  chunk_opt: Option<*const Chunk>,
+  current_frame_index: usize,
+  frames: [CallFrame; FRAMES_MAX],
   gc: Gc,
-  inst_ptr: *mut u8,
   _stack: Box<[Value; STACK_MAX]>,
   stack_addr: *mut Value,
   stack_top: *mut Value,
 }
 
+enum ProgressState {
+  Continue,
+  Done,
+  Error,
+}
+use ProgressState::{Continue, Done, Error};
+
 impl VM {
+  #[allow(clippy::large_stack_frames)]
   #[must_use]
   pub fn init() -> Self {
+    let frames: [CallFrame; FRAMES_MAX] = array::from_fn(|_| CallFrame::default());
     let mut stack: [Value; STACK_MAX] = array::from_fn(|_| Double(0.0));
     let stack_addr = stack.as_mut_ptr();
     let stack_top = stack.as_mut_ptr();
-    Self {
-      chunk_opt: None,
+
+    let mut this = Self {
+      current_frame_index: 0,
+      frames,
       gc: Gc::new(),
-      inst_ptr: null_mut(),
       _stack: Box::new(stack),
       stack_addr,
       stack_top,
-    }
+    };
+
+    let _ = START_TIME;
+
+    this.define_native_fn(
+      "clock",
+      NativeFnObj(Box::new(|_arg_count, _args_ptr| Double(START_TIME.elapsed().as_secs_f64()))),
+    );
+
+    this
   }
 
   #[must_use]
@@ -60,24 +103,21 @@ impl VM {
   ///
   /// When a lock cannot be acquired on the objects for GC'ing.
   pub fn free(&mut self) -> &Self {
-    self.chunk_opt = None;
     self.gc.free();
     self.gc = Gc::new();
 
     self
   }
 
+  #[allow(clippy::option_if_let_else)]
   pub fn interpret(&mut self, source: &str) -> Interpretation {
-    let mut chunk = Chunk::default();
-    self.chunk_opt = Some(&raw const chunk);
+    if let Some(fn_ptr) = compile(source, &mut self.gc) {
+      self.push(ReferenceValue(Reference(HeapFunction(fn_ptr))));
 
-    if compile(source, &mut chunk, &mut self.gc) {
-      self.inst_ptr = chunk.op_codes;
-      let result = self.run();
-      let _ = chunk.free();
-      result
+      let _ = self.call_function_for_error(fn_ptr, 0, &Script);
+
+      self.run()
     } else {
-      let _ = chunk.free();
       CompilationError
     }
   }
@@ -98,17 +138,11 @@ impl VM {
 
   const fn reset_stack(&mut self) {
     self.stack_top = self.stack_addr;
+    self.current_frame_index = 0;
   }
 
   #[allow(clippy::too_many_lines)]
   fn run(&mut self) -> Interpretation {
-    enum ProgressState {
-      Continue,
-      Done,
-      Error,
-    }
-    use ProgressState::{Continue, Done, Error};
-
     macro_rules! runtime_error {
       ($($arg: tt)*) => {{
         self.runtime_error_impl(format_args!($($arg)*));
@@ -136,8 +170,9 @@ impl VM {
 
     macro_rules! read_u8 {
       () => {{
-        let byte = unsafe { *self.inst_ptr };
-        self.inst_ptr = unsafe { self.inst_ptr.add(1) };
+        let current = &mut self.frames[self.current_frame_index];
+        let byte = unsafe { *current.inst_ptr };
+        current.inst_ptr = unsafe { current.inst_ptr.add(1) };
         byte
       }};
     }
@@ -149,7 +184,9 @@ impl VM {
     macro_rules! read_constant {
       () => {{
         let byte = read_u8!() as usize;
-        unsafe { ptr::read((*self.chunk_opt.unwrap()).constants.values.add(byte)) }
+        let current = &mut self.frames[self.current_frame_index];
+        let chunk = unsafe { &*current.function_ptr }.chunk();
+        unsafe { ptr::read(chunk.constants.values.add(byte)) }
       }};
     }
 
@@ -181,8 +218,9 @@ impl VM {
         }
         println!();
 
-        let chunk = unsafe { &*self.chunk_opt.unwrap() };
-        let offset = unsafe { self.inst_ptr.offset_from(chunk.op_codes).cast_unsigned() };
+        let current = &self.frames[self.current_frame_index];
+        let chunk = unsafe { &*current.function_ptr }.chunk();
+        let offset = unsafe { current.inst_ptr.offset_from(chunk.op_codes).cast_unsigned() };
         disassemble_instruction(chunk, offset);
       }
 
@@ -228,6 +266,11 @@ impl VM {
         },
 
         Some(False) => push_and_win!(Boolean(false)),
+        Some(FnCall) => {
+          let arg_count = read_u8!();
+          let value = self.peek(arg_count as usize);
+          self.call_value_for_error(&value, arg_count).unwrap_or(Continue)
+        },
 
         Some(GetGlobal) => {
           let name_ptr = read_string!();
@@ -241,22 +284,26 @@ impl VM {
         },
         Some(GetLocal) => {
           let slot_num = read_u8!();
-          let value = unsafe { &*self.stack_addr.add(slot_num as usize) }.clone();
+          let slots_ptr = self.frames[self.current_frame_index].slots_ptr;
+          let value = unsafe { &*slots_ptr.add(slot_num as usize) }.clone();
           push_and_win!(value)
         },
         Some(Greater) => binary_op!(Boolean, >),
 
         Some(Jump) => {
           let offset = read_u16!();
+          let current = &mut self.frames[self.current_frame_index];
           unsafe {
-            self.inst_ptr = self.inst_ptr.add(offset as usize);
+            current.inst_ptr = current.inst_ptr.add(offset as usize);
           }
           Continue
         },
         Some(JumpIfFalse) => {
           let offset = read_u16!() as usize;
-          if is_falsey(&self.peek(0)) {
-            self.inst_ptr = unsafe { self.inst_ptr.add(offset) };
+          let value = self.peek(0);
+          let current = &mut self.frames[self.current_frame_index];
+          if is_falsey(&value) {
+            current.inst_ptr = unsafe { current.inst_ptr.add(offset) };
           }
           Continue
         },
@@ -264,7 +311,8 @@ impl VM {
         Some(Less) => binary_op!(Boolean, <),
         Some(Loop) => {
           let offset = read_u16!() as usize;
-          self.inst_ptr = unsafe { self.inst_ptr.sub(offset) };
+          let current = &mut self.frames[self.current_frame_index];
+          current.inst_ptr = unsafe { current.inst_ptr.sub(offset) };
           Continue
         },
 
@@ -292,7 +340,18 @@ impl VM {
           Continue
         },
 
-        Some(Return) => Done,
+        Some(Return) => {
+          let result = self.pop();
+          if self.current_frame_index == 0 {
+            let _ = self.pop();
+            Done
+          } else {
+            self.stack_top = self.frames[self.current_frame_index].slots_ptr;
+            self.push(result);
+            self.current_frame_index -= 1;
+            Continue
+          }
+        },
 
         Some(SetGlobal) => {
           let name_ptr = read_string!();
@@ -309,8 +368,9 @@ impl VM {
         },
         Some(SetLocal) => {
           let slot_num = read_u8!();
+          let slots_ptr = self.frames[self.current_frame_index].slots_ptr;
           let value = self.peek(0);
-          unsafe { *self.stack_addr.add(slot_num as usize) = value };
+          unsafe { *slots_ptr.add(slot_num as usize) = value };
           Continue
         },
         Some(Subtract) => binary_op!(Double, -),
@@ -335,16 +395,88 @@ impl VM {
     }
   }
 
-  fn runtime_error_impl(&mut self, args: std::fmt::Arguments) {
+  fn call_function_for_error(
+    &mut self, func_ptr: *mut FunctionObj, arg_count: u8, function_kind: &FunctionKind,
+  ) -> Option<ProgressState> {
+    let callee = unsafe { &*func_ptr };
+
+    if u32::from(arg_count) == callee.arity() {
+      if self.current_frame_index == (FRAMES_MAX - 1) {
+        self.runtime_error_impl(format_args!("Stack overflow."));
+        Some(Error)
+      } else {
+        if function_kind == &Function {
+          self.current_frame_index += 1;
+        }
+        let current = &mut self.frames[self.current_frame_index];
+
+        current.function_ptr = func_ptr;
+        current.inst_ptr = callee.chunk().op_codes;
+        current.slots_ptr = unsafe { self.stack_top.sub((arg_count + 1) as usize) };
+
+        None
+      }
+    } else {
+      self.runtime_error_impl(format_args!("Expected {} arguments but got {arg_count}.", callee.arity()));
+      Some(Error)
+    }
+  }
+
+  fn call_value_for_error(&mut self, callee: &Value, arg_count: u8) -> Option<ProgressState> {
+    if let ReferenceValue(Reference(HeapFunction(func_ptr))) = callee
+      && !func_ptr.is_null()
+    {
+      self.call_function_for_error(*func_ptr, arg_count, &Function)
+    } else if let ReferenceValue(Reference(HeapNativeFn(native_fn_ptr))) = callee
+      && !native_fn_ptr.is_null()
+    {
+      let native_fn = unsafe { &**native_fn_ptr };
+      let result = native_fn.invoke(arg_count, unsafe { self.stack_top.sub(arg_count as usize) });
+      unsafe { self.stack_top = self.stack_top.sub((arg_count + 1) as usize) };
+      self.push(result);
+      None
+    } else {
+      self.runtime_error_impl(format_args!("Can only call functions and classes."));
+      Some(Error)
+    }
+  }
+
+  pub fn define_native_fn(&mut self, name: &str, native_fn: NativeFnObj) {
+    let name_ptr = self.gc.copy_string(name, 0, name.len());
+    let native_fn_ptr = self.gc.allocate_native_fn(native_fn);
+
+    let name_value = ReferenceValue(Reference(HeapString(name_ptr)));
+    let native_fn_value = ReferenceValue(Reference(HeapNativeFn(native_fn_ptr)));
+    self.push(name_value);
+    self.push(native_fn_value.clone());
+
+    let key = unsafe { &*name_ptr };
+    self.gc.globals.set(key, native_fn_value);
+
+    self.pop();
+    self.pop();
+  }
+
+  fn runtime_error_impl(&mut self, args: Arguments) {
     eprintln!("{args}");
 
-    let line = unsafe {
-      let chunk = &*self.chunk_opt.unwrap();
-      let instruction = self.inst_ptr.offset_from(chunk.op_codes).cast_unsigned() - 1;
-      *chunk.line_nums.add(instruction)
-    };
+    for i in (0..=self.current_frame_index).rev() {
+      let frame = &mut self.frames[i];
+      let function = unsafe { &*frame.function_ptr };
+      let op_codes_ptr = function.chunk().op_codes;
+      let instruction = unsafe { frame.inst_ptr.offset_from(op_codes_ptr) }.cast_unsigned() - 1;
 
-    eprintln!("[line {line}] in script");
+      let suffix = match function {
+        MainScript { .. } => "script".to_string(),
+        UserDefined { name_ptr, .. } => {
+          let string = unsafe { &**name_ptr }.to_string();
+          format!("{}()", &string[1..(string.len() - 1)])
+        },
+      };
+
+      let line_num = unsafe { &*function.chunk().line_nums.add(instruction) };
+      eprintln!("[line {line_num}] in {suffix}");
+    }
 
     self.reset_stack();
   }

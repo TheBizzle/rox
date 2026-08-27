@@ -5,20 +5,23 @@ use crate::chunk::Chunk;
 use crate::disassembler::disassemble_chunk;
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal as EqualCode, False as FalseCode, GetGlobal, GetLocal,
-  Greater as GreaterCode, Jump, JumpIfFalse, Less as LessCode, Loop, Multiply, Negate, Nil as NilCode, Not,
-  Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, Subtract, True as TrueCode,
+  self, Add, Constant, DefineGlobal, Divide, Equal as EqualCode, False as FalseCode, FnCall, GetGlobal,
+  GetLocal, Greater as GreaterCode, Jump, JumpIfFalse, Less as LessCode, Loop, Multiply, Negate,
+  Nil as NilCode, Not, Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, Subtract,
+  True as TrueCode,
 };
 
 use crate::parser::Parser;
 
-use crate::gc::Gc;
+use crate::gc::FunctionObj::{self, MainScript, UserDefined};
+use crate::gc::HeapObject::{HeapFunction, HeapString};
+use crate::gc::{Gc, Reference};
 
 use crate::token::Token;
 use crate::token::TokenType::{
-  self, And, Bang, BangEqual, Class, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater, GreaterEqual,
-  Identifier, If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Or, Plus, Print,
-  Return, RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
+  self, And, Bang, BangEqual, Class, Comma, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
+  GreaterEqual, Identifier, If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Or,
+  Plus, Print, Return, RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
 };
 
 use crate::value::Value::{self, Double, ReferenceValue};
@@ -60,6 +63,8 @@ struct ParseRule<'a, 'b, 'c> {
 fn rule_for<'a, 'b, 'c>(typ: &TokenType) -> ParseRule<'a, 'b, 'c> {
   let (prefix, infix, precedence): (Option<ParseFn<'a, 'b, 'c>>, Option<ParseFn<'a, 'b, 'c>>, Precedence) =
     match typ {
+      LeftParen => (Some(Compiler::parse_grouping), Some(Compiler::parse_function_call), Precedence::Call),
+
       Slash | Star => (None, Some(Compiler::parse_binary), Precedence::Factor),
 
       Minus => (Some(Compiler::parse_unary), Some(Compiler::parse_binary), Precedence::Term),
@@ -82,8 +87,6 @@ fn rule_for<'a, 'b, 'c>(typ: &TokenType) -> ParseRule<'a, 'b, 'c> {
 
       Bang => (Some(Compiler::parse_unary), None, Precedence::Bupkis),
 
-      LeftParen => (Some(Compiler::parse_grouping), None, Precedence::Bupkis),
-
       False | Nil | True => (Some(Compiler::parse_literal), None, Precedence::Bupkis),
 
       Identifier(_) => (Some(Compiler::parse_var_reference), None, Precedence::Bupkis),
@@ -95,14 +98,34 @@ fn rule_for<'a, 'b, 'c>(typ: &TokenType) -> ParseRule<'a, 'b, 'c> {
 }
 
 #[derive(Debug)]
-#[allow(unused)]
-struct LocalVar {
-  name: String,
-  token: Token,
-  depth_opt: Option<u8>,
+#[allow(unused)] // TODO
+enum LocalVar {
+  GlobalFunction,
+  LocalBinding { name: String, token: Token, depth_opt: Option<u8> },
+}
+use LocalVar::{GlobalFunction, LocalBinding};
+
+impl LocalVar {
+  const fn depth_opt(&self) -> Option<&u8> {
+    match self {
+      GlobalFunction => None,
+      LocalBinding { depth_opt, .. } => depth_opt.as_ref(),
+    }
+  }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum FunctionKind {
+  Function,
+  Script,
+}
+use FunctionKind::{Function, Script};
+
+#[allow(unused)] // TODO
 struct Program {
+  function_ptr: *mut FunctionObj,
+  function_kind: FunctionKind,
+
   local_var_opts: Box<[Option<LocalVar>; u8::MAX as usize]>,
   local_var_count: u8,
   scope_depth: u8,
@@ -110,17 +133,23 @@ struct Program {
 
 impl Program {
   #[must_use]
-  pub fn new() -> Self {
+  pub fn new(function_ptr: *mut FunctionObj, function_kind: FunctionKind) -> Self {
     let size = u8::MAX as usize;
     let mut v = Vec::with_capacity(size);
     v.resize_with(size, || None);
+    v[0] = Some(GlobalFunction);
     let local_var_opts = v.try_into().expect("Length must be exactly `u8::MAX`");
 
-    Self { local_var_opts, local_var_count: 0, scope_depth: 0 }
+    Self { function_ptr, function_kind, local_var_opts, local_var_count: 1, scope_depth: 0 }
   }
 
   pub const fn begin_scope(&mut self) {
     self.scope_depth += 1;
+  }
+
+  pub fn chunk(&mut self) -> &mut Chunk {
+    let function = unsafe { &mut *self.function_ptr };
+    function.chunk_mut()
   }
 
   pub fn end_scope(&mut self) -> Vec<OpCode> {
@@ -130,8 +159,8 @@ impl Program {
 
     while self.local_var_count > 0
       && let index = (self.local_var_count - 1) as usize
-      && let Some(depth) = self.local_var_opts[index].as_ref().unwrap().depth_opt
-      && depth > self.scope_depth
+      && let Some(depth) = self.local_var_opts[index].as_ref().unwrap().depth_opt()
+      && depth > &self.scope_depth
     {
       op_codes.push(Pop);
       self.local_var_count -= 1;
@@ -141,20 +170,24 @@ impl Program {
   }
 
   fn mark_latest_var_initialized(&mut self) {
-    let index = (self.local_var_count - 1) as usize;
-    let _ = self.local_var_opts[index].as_mut().unwrap().depth_opt.insert(self.scope_depth);
+    if self.scope_depth != 0 {
+      let index = (self.local_var_count - 1) as usize;
+      if let LocalBinding { depth_opt, .. } = self.local_var_opts[index].as_mut().unwrap() {
+        let _ = depth_opt.insert(self.scope_depth);
+      }
+    }
   }
 }
 
 struct Compiler<'a, 'b, 'c> {
-  parser: Parser<'a>,
+  parser: &'a mut Parser<'b>,
   program: Program,
-  compiling_chunk: &'b mut Chunk,
   gc: &'c mut Gc,
 }
 
-pub fn compile(source: &str, chunk: &mut Chunk, gc: &mut Gc) -> bool {
-  let mut compiler = Compiler::new(source, chunk, gc);
+pub fn compile(source: &str, gc: &mut Gc) -> Option<*mut FunctionObj> {
+  let mut parser = Parser::new(source);
+  let mut compiler = Compiler::new(&mut parser, gc, Script);
 
   compiler.parser.advance();
 
@@ -162,24 +195,40 @@ pub fn compile(source: &str, chunk: &mut Chunk, gc: &mut Gc) -> bool {
     compiler.parse_declaration();
   }
 
-  compiler.end();
-  !compiler.parser.had_error
+  let result_ptr = compiler.end();
+
+  (!compiler.parser.had_error).then_some(result_ptr)
 }
 
 impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
-  pub fn new(source: &'a str, chunk: &'b mut Chunk, gc: &'c mut Gc) -> Self {
-    Compiler { parser: Parser::new(source), program: Program::new(), compiling_chunk: chunk, gc }
+  pub fn new(parser: &'a mut Parser<'b>, gc: &'c mut Gc, kind: FunctionKind) -> Self {
+    let function_obj = match kind {
+      Script => MainScript { arity: 0, chunk: Chunk::default() },
+      Function => {
+        let prev_loc = &parser.previous_token_opt.as_ref().unwrap().loc;
+        let name_ptr = gc.copy_string(parser.source, prev_loc.start_index as usize, prev_loc.length as usize);
+        UserDefined { arity: 0, chunk: Chunk::default(), name_ptr }
+      },
+    };
+
+    Self { parser, program: Program::new(gc.allocate_function(function_obj), kind), gc }
   }
 
-  fn end(&mut self) {
+  fn end(&mut self) -> *mut FunctionObj {
     self.emit_return();
     if IS_DEBUGGING && self.parser.had_error {
-      disassemble_chunk(self.compiling_chunk, "code");
+      let function = unsafe { &*self.program.function_ptr };
+      let fn_display = match function {
+        MainScript { .. } => "<script>".to_string(),
+        UserDefined { name_ptr, .. } => unsafe { &**name_ptr }.to_string(),
+      };
+      disassemble_chunk(self.program.chunk(), &fn_display);
     }
+    self.program.function_ptr
   }
 
   fn emit_byte<T: Into<u8>>(&mut self, byte: T) {
-    self.compiling_chunk.write(byte, self.parser.previous_token_opt.as_ref().unwrap().loc.line_num);
+    self.program.chunk().write(byte, self.parser.previous_token_opt.as_ref().unwrap().loc.line_num);
   }
 
   fn emit_bytes<T: Into<u8>, U: Into<u8>>(&mut self, byte1: T, byte2: U) {
@@ -196,7 +245,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     self.emit_byte(instruction);
     self.emit_byte(0xff);
     self.emit_byte(0xff);
-    JumpTarget(self.compiling_chunk.count - 2)
+    JumpTarget(self.program.chunk().count - 2)
   }
 
   fn emit_loop(&mut self, jump_target: &JumpTarget) {
@@ -204,7 +253,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
 
     self.emit_byte(Loop);
 
-    let offset = self.compiling_chunk.count - loop_start + 2;
+    let offset = self.program.chunk().count - loop_start + 2;
 
     if offset > (u16::MAX as usize) {
       self.parser.error("Loop body too large.");
@@ -215,11 +264,12 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn emit_return(&mut self) {
+    self.emit_byte(NilCode);
     self.emit_byte(ReturnCode);
   }
 
   fn make_constant(&mut self, value: Value) -> u8 {
-    self.compiling_chunk.add_constant(value)
+    self.program.chunk().add_constant(value)
   }
 
   fn parse_and(&mut self, _can_assign: bool) {
@@ -229,6 +279,27 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     self.parse_precedence(&Precedence::And);
 
     self.fill_in_jump_target(&end_jt);
+  }
+
+  fn parse_args(&mut self) -> u8 {
+    let mut arg_count = 0;
+
+    if self.parser.current_token_opt.as_ref().unwrap().typ != RightParen {
+      loop {
+        self.parse_expression();
+        if arg_count == 255 {
+          self.parser.error("Can't have more than 255 arguments.");
+        }
+        arg_count += 1;
+        if !self.token_is_a(&Comma) {
+          break;
+        }
+      }
+    }
+
+    self.parser.consume(&RightParen, "Expect ')' after arguments.");
+
+    arg_count
   }
 
   fn parse_binary(&mut self, _can_assign: bool) {
@@ -273,7 +344,9 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn parse_declaration(&mut self) {
-    if self.token_is_a(&Var) {
+    if self.token_is_a(&Fun) {
+      self.parse_function_decl();
+    } else if self.token_is_a(&Var) {
       self.parse_var_decl();
     } else {
       self.parse_statement();
@@ -305,7 +378,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       self.parse_expr_stmt();
     }
 
-    let mut loop_start_jt = JumpTarget(self.compiling_chunk.count);
+    let mut loop_start_jt = JumpTarget(self.program.chunk().count);
 
     let mut exit_jt_opt = None;
     if !self.token_is_a(&Semicolon) {
@@ -317,7 +390,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
 
     if !self.token_is_a(&RightParen) {
       let body_jt = self.emit_jump(Jump);
-      let inc_start_jt = JumpTarget(self.compiling_chunk.count);
+      let inc_start_jt = JumpTarget(self.program.chunk().count);
 
       self.parse_expression();
       self.emit_byte(Pop);
@@ -339,6 +412,54 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     for op_code in self.program.end_scope() {
       self.emit_byte(op_code);
     }
+  }
+
+  fn parse_function(&mut self, kind: FunctionKind) {
+    let mut subcompiler = Compiler::new(self.parser, self.gc, kind);
+    subcompiler.program.begin_scope();
+
+    subcompiler.parser.consume(&LeftParen, "Expect '(' after function name.");
+
+    if subcompiler.parser.current_token_opt.as_ref().unwrap().typ != RightParen {
+      let function = unsafe { &mut *subcompiler.program.function_ptr };
+      let mut arity = function.arity();
+
+      loop {
+        arity += 1;
+        if arity > 255 {
+          subcompiler.parser.error("Can't have more than 255 parameters.");
+        }
+
+        let constant = subcompiler.parse_variable("Expect parameter name.");
+        subcompiler.define_variable(constant);
+
+        if !subcompiler.token_is_a(&Comma) {
+          break;
+        }
+      }
+
+      function.set_arity(arity);
+    }
+
+    subcompiler.parser.consume(&RightParen, "Expect ')' after parameters.");
+    subcompiler.parser.consume(&LeftBrace, "Expect '{' before function body.");
+    subcompiler.parse_block();
+
+    let reference = Reference(HeapFunction(subcompiler.end()));
+    let constant = self.make_constant(ReferenceValue(reference));
+    self.emit_bytes(Constant, constant);
+  }
+
+  fn parse_function_call(&mut self, _can_assign: bool) {
+    let arg_count = self.parse_args();
+    self.emit_bytes(FnCall, arg_count);
+  }
+
+  fn parse_function_decl(&mut self) {
+    let global_var_byte = self.parse_variable("Expect function name.");
+    self.program.mark_latest_var_initialized();
+    self.parse_function(Function);
+    self.define_variable(global_var_byte);
   }
 
   fn parse_grouping(&mut self, _can_assign: bool) {
@@ -411,6 +532,18 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
+  fn parse_return(&mut self) {
+    if self.program.function_kind == Script {
+      self.parser.error("Can't return from top-level code.");
+    } else if self.token_is_a(&Semicolon) {
+      self.emit_return();
+    } else {
+      self.parse_expression();
+      self.parser.consume(&Semicolon, "Expect ';' after return value.");
+      self.emit_byte(ReturnCode);
+    }
+  }
+
   fn parse_statement(&mut self) {
     if self.token_is_a(&Print) {
       self.parse_expression();
@@ -420,6 +553,8 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       self.parse_if_else();
     } else if self.token_is_a(&For) {
       self.parse_for();
+    } else if self.token_is_a(&Return) {
+      self.parse_return();
     } else if self.token_is_a(&While) {
       self.parse_while();
     } else if self.token_is_a(&LeftBrace) {
@@ -438,7 +573,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     let str_start = (prev_loc.start_index + 1) as usize;
     let length = (prev_loc.length - 2) as usize;
     let str_ref = self.gc.copy_string(self.parser.source, str_start, length);
-    self.emit_constant(ReferenceValue(str_ref));
+    self.emit_constant(ReferenceValue(Reference(HeapString(str_ref))));
   }
 
   fn parse_unary(&mut self, _can_assign: bool) {
@@ -497,7 +632,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn parse_while(&mut self) {
-    let loop_start_jt = JumpTarget(self.compiling_chunk.count);
+    let loop_start_jt = JumpTarget(self.program.chunk().count);
 
     self.parser.consume(&LeftParen, "Expect '(' after 'while'.");
     self.parse_expression();
@@ -519,26 +654,27 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       self.parser.error("Too many local variables in function.");
     } else {
       let token = self.parser.previous_token_opt.clone().unwrap();
-      let local = LocalVar { name, token, depth_opt: None };
+      let local = LocalBinding { name, token, depth_opt: None };
       let index = self.program.local_var_count as usize;
       self.program.local_var_opts[index] = Some(local);
       self.program.local_var_count += 1;
     }
   }
 
-  fn declare_variable(&mut self, name: String) {
+  fn declare_variable(&mut self, new_var_name: String) {
     if self.program.scope_depth > 0 {
       for i in (0..self.program.local_var_count).rev() {
-        let local = self.program.local_var_opts[i as usize].as_ref().unwrap();
-        if let Some(depth) = local.depth_opt
-          && depth < self.program.scope_depth
-        {
-          break; // In this case, we're just shadowing, so no worries. --Jason B. (8/23/26)
-        } else if name == local.name {
-          self.parser.error("Already a variable with this name in this scope.");
+        if let Some(LocalBinding { name, depth_opt, .. }) = self.program.local_var_opts[i as usize].as_ref() {
+          if let Some(depth) = depth_opt
+            && depth < &self.program.scope_depth
+          {
+            break; // In this case, we're just shadowing, so no worries. --Jason B. (8/23/26)
+          } else if &new_var_name == name {
+            self.parser.error("Already a variable with this name in this scope.");
+          }
         }
       }
-      self.add_local(name);
+      self.add_local(new_var_name);
     }
   }
 
@@ -552,22 +688,22 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
 
   fn fill_in_jump_target(&mut self, jump_target: &JumpTarget) {
     let JumpTarget(offset) = jump_target;
-    let jt = self.compiling_chunk.count - offset - 2;
+    let jt = self.program.chunk().count - offset - 2;
 
     if jt > (u16::MAX as usize) {
       self.parser.error("Too much code to jump over.");
     }
 
     unsafe {
-      *self.compiling_chunk.op_codes.add(*offset) = u8::try_from((jt >> 8) & 0xff).unwrap();
-      *self.compiling_chunk.op_codes.add(offset + 1) = u8::try_from(jt & 0xff).unwrap();
+      *self.program.chunk().op_codes.add(*offset) = u8::try_from((jt >> 8) & 0xff).unwrap();
+      *self.program.chunk().op_codes.add(offset + 1) = u8::try_from(jt & 0xff).unwrap();
     }
   }
 
   fn make_ident_constant(&mut self) -> u8 {
     let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
     let reference = self.gc.copy_string(self.parser.source, loc.start_index as usize, loc.length as usize);
-    self.make_constant(ReferenceValue(reference))
+    self.make_constant(ReferenceValue(Reference(HeapString(reference))))
   }
 
   fn make_named_variable(&mut self, can_assign: bool) {
@@ -586,11 +722,12 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
-  fn resolve_local(&mut self, name: &str) -> Option<u8> {
+  fn resolve_local(&mut self, target_name: &str) -> Option<u8> {
     for i in (0..self.program.local_var_count).rev() {
-      let local = self.program.local_var_opts[i as usize].as_ref().unwrap();
-      if name == local.name {
-        if local.depth_opt.is_none() {
+      if let Some(LocalBinding { name, depth_opt, .. }) = self.program.local_var_opts[i as usize].as_ref()
+        && target_name == name
+      {
+        if depth_opt.is_none() {
           self.parser.error("Can't read local variable in its own initializer.");
         } else {
           return Some(i);

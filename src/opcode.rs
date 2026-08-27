@@ -9,6 +9,7 @@ pub enum OpCode {
   Divide,
   Equal,
   False,
+  FnCall,
   GetGlobal,
   GetLocal,
   Greater,
