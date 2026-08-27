@@ -173,39 +173,27 @@ impl Gc {
     Self { globals: HashTable::new(), objects: null_mut(), strings: HashTable::new() }
   }
 
+  fn allocate_on_heap<T, F: Fn(*mut T) -> HeapObject>(&mut self, obj: T, constructor: F) -> *mut T {
+    let ptr = Box::into_raw(Box::new(obj));
+    let object = constructor(ptr);
+    let gc_object = Box::new(GcObject { next: self.objects, object });
+    let gc_ptr = Box::into_raw(gc_object);
+    self.objects = gc_ptr;
+    ptr
+  }
+
   pub fn allocate_function(&mut self, function_obj: FunctionObj) -> *mut FunctionObj {
-    let function_ptr = Box::into_raw(Box::new(function_obj));
-
-    let heap_obj = HeapFunction(function_ptr);
-    self.allocate_object(heap_obj);
-
-    function_ptr
+    self.allocate_on_heap(function_obj, HeapFunction)
   }
 
   pub fn allocate_native_fn(&mut self, native_fn_obj: NativeFnObj) -> *mut NativeFnObj {
-    let native_fn_ptr = Box::into_raw(Box::new(native_fn_obj));
-
-    let heap_obj = HeapNativeFn(native_fn_ptr);
-    self.allocate_object(heap_obj);
-
-    native_fn_ptr
-  }
-
-  fn allocate_object(&mut self, object: HeapObject) {
-    let gc_object = Box::new(GcObject { next: self.objects, object });
-    let ptr = Box::into_raw(gc_object);
-    self.objects = ptr;
+    self.allocate_on_heap(native_fn_obj, HeapNativeFn)
   }
 
   fn allocate_string(&mut self, chars: *const u8, length: usize, hash: u32) -> *mut StringObj {
     let string_obj = StringObj { chars, length, hash };
-    let string_ptr = Box::into_raw(Box::new(string_obj));
-
-    let heap_obj = HeapString(string_ptr);
-    self.allocate_object(heap_obj);
-
+    let string_ptr = self.allocate_on_heap(string_obj, HeapString);
     self.strings.set(string_ptr, Nil);
-
     string_ptr
   }
 
