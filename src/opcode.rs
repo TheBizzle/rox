@@ -4,6 +4,8 @@ use strum::{Display, FromRepr};
 #[repr(u8)]
 pub enum OpCode {
   Add,
+  CloseUpvalue,
+  Closure,
   Constant,
   DefineGlobal,
   Divide,
@@ -12,6 +14,7 @@ pub enum OpCode {
   FnCall,
   GetGlobal,
   GetLocal,
+  GetUpvalue,
   Greater,
   Jump,
   JumpIfFalse,
@@ -26,6 +29,7 @@ pub enum OpCode {
   Return,
   SetGlobal,
   SetLocal,
+  SetUpvalue,
   Subtract,
   True,
 }

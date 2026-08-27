@@ -5,10 +5,10 @@ use crate::chunk::Chunk;
 use crate::disassembler::disassemble_chunk;
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal as EqualCode, False as FalseCode, FnCall, GetGlobal,
-  GetLocal, Greater as GreaterCode, Jump, JumpIfFalse, Less as LessCode, Loop, Multiply, Negate,
-  Nil as NilCode, Not, Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, Subtract,
-  True as TrueCode,
+  self, Add, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal as EqualCode, False as FalseCode,
+  FnCall, GetGlobal, GetLocal, GetUpvalue, Greater as GreaterCode, Jump, JumpIfFalse, Less as LessCode, Loop,
+  Multiply, Negate, Nil as NilCode, Not, Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal,
+  SetUpvalue, Subtract, True as TrueCode,
 };
 
 use crate::parser::Parser;
@@ -101,7 +101,7 @@ fn rule_for<'a, 'b, 'c>(typ: &TokenType) -> ParseRule<'a, 'b, 'c> {
 #[allow(unused)] // TODO
 enum LocalVar {
   GlobalFunction,
-  LocalBinding { name: String, token: Token, depth_opt: Option<u8> },
+  LocalBinding { name: String, token: Token, depth_opt: Option<u8>, is_captured: bool },
 }
 use LocalVar::{GlobalFunction, LocalBinding};
 
@@ -110,6 +110,22 @@ impl LocalVar {
     match self {
       GlobalFunction => None,
       LocalBinding { depth_opt, .. } => depth_opt.as_ref(),
+    }
+  }
+
+  const fn is_captured(&self) -> bool {
+    match self {
+      GlobalFunction => false,
+      LocalBinding { is_captured, .. } => *is_captured,
+    }
+  }
+
+  const fn mark_captured(&mut self) {
+    match self {
+      GlobalFunction => {},
+      LocalBinding { is_captured, .. } => {
+        *is_captured = true;
+      },
     }
   }
 }
@@ -121,7 +137,12 @@ pub enum FunctionKind {
 }
 use FunctionKind::{Function, Script};
 
-#[allow(unused)] // TODO
+#[derive(Debug, Eq, PartialEq)]
+struct Upvalue {
+  index: u8,
+  is_local: bool,
+}
+
 struct Program {
   function_ptr: *mut FunctionObj,
   function_kind: FunctionKind,
@@ -129,6 +150,8 @@ struct Program {
   local_var_opts: Box<[Option<LocalVar>; u8::MAX as usize]>,
   local_var_count: u8,
   scope_depth: u8,
+
+  upvalues: [Option<Upvalue>; u8::MAX as usize],
 }
 
 impl Program {
@@ -140,7 +163,11 @@ impl Program {
     v[0] = Some(GlobalFunction);
     let local_var_opts = v.try_into().expect("Length must be exactly `u8::MAX`");
 
-    Self { function_ptr, function_kind, local_var_opts, local_var_count: 1, scope_depth: 0 }
+    let mut v2 = Vec::with_capacity(size);
+    v2.resize_with(size, || None);
+    let upvalues = v2.try_into().expect("Length must be exactly `u8::MAX`");
+
+    Self { function_ptr, function_kind, local_var_opts, local_var_count: 1, scope_depth: 0, upvalues }
   }
 
   pub const fn begin_scope(&mut self) {
@@ -159,10 +186,15 @@ impl Program {
 
     while self.local_var_count > 0
       && let index = (self.local_var_count - 1) as usize
-      && let Some(depth) = self.local_var_opts[index].as_ref().unwrap().depth_opt()
+      && let local_var = self.local_var_opts[index].as_ref().unwrap()
+      && let Some(depth) = local_var.depth_opt()
       && depth > &self.scope_depth
     {
-      op_codes.push(Pop);
+      if local_var.is_captured() {
+        op_codes.push(CloseUpvalue);
+      } else {
+        op_codes.push(Pop);
+      }
       self.local_var_count -= 1;
     }
 
@@ -181,13 +213,23 @@ impl Program {
 
 struct Compiler<'a, 'b, 'c> {
   parser: &'a mut Parser<'b>,
-  program: Program,
+  programs: Vec<Program>,
   gc: &'c mut Gc,
+}
+
+impl Compiler<'_, '_, '_> {
+  fn program(&mut self) -> &mut Program {
+    self.programs.last_mut().unwrap()
+  }
+
+  fn program_at(&mut self, index: usize) -> &mut Program {
+    &mut self.programs[index]
+  }
 }
 
 pub fn compile(source: &str, gc: &mut Gc) -> Option<*mut FunctionObj> {
   let mut parser = Parser::new(source);
-  let mut compiler = Compiler::new(&mut parser, gc, Script);
+  let mut compiler = Compiler::new(&mut parser, gc);
 
   compiler.parser.advance();
 
@@ -201,34 +243,28 @@ pub fn compile(source: &str, gc: &mut Gc) -> Option<*mut FunctionObj> {
 }
 
 impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
-  pub fn new(parser: &'a mut Parser<'b>, gc: &'c mut Gc, kind: FunctionKind) -> Self {
-    let function_obj = match kind {
-      Script => MainScript { arity: 0, chunk: Chunk::default() },
-      Function => {
-        let prev_loc = &parser.previous_token_opt.as_ref().unwrap().loc;
-        let name_ptr = gc.copy_string(parser.source, prev_loc.start_index as usize, prev_loc.length as usize);
-        UserDefined { arity: 0, chunk: Chunk::default(), name_ptr }
-      },
-    };
-
-    Self { parser, program: Program::new(gc.allocate_function(function_obj), kind), gc }
+  pub fn new(parser: &'a mut Parser<'b>, gc: &'c mut Gc) -> Self {
+    let function_obj = MainScript { arity: 0, chunk: Chunk::default(), upvalue_count: 0 };
+    let programs = vec![Program::new(gc.allocate_function(function_obj), Script)];
+    Self { parser, programs, gc }
   }
 
   fn end(&mut self) -> *mut FunctionObj {
     self.emit_return();
     if IS_DEBUGGING && self.parser.had_error {
-      let function = unsafe { &*self.program.function_ptr };
+      let function = unsafe { &*self.program().function_ptr };
       let fn_display = match function {
         MainScript { .. } => "<script>".to_string(),
         UserDefined { name_ptr, .. } => unsafe { &**name_ptr }.to_string(),
       };
-      disassemble_chunk(self.program.chunk(), &fn_display);
+      disassemble_chunk(self.program().chunk(), &fn_display);
     }
-    self.program.function_ptr
+    self.program().function_ptr
   }
 
   fn emit_byte<T: Into<u8>>(&mut self, byte: T) {
-    self.program.chunk().write(byte, self.parser.previous_token_opt.as_ref().unwrap().loc.line_num);
+    let line_num = self.parser.previous_token_opt.as_ref().unwrap().loc.line_num;
+    self.program().chunk().write(byte, line_num);
   }
 
   fn emit_bytes<T: Into<u8>, U: Into<u8>>(&mut self, byte1: T, byte2: U) {
@@ -245,7 +281,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     self.emit_byte(instruction);
     self.emit_byte(0xff);
     self.emit_byte(0xff);
-    JumpTarget(self.program.chunk().count - 2)
+    JumpTarget(self.program().chunk().count - 2)
   }
 
   fn emit_loop(&mut self, jump_target: &JumpTarget) {
@@ -253,7 +289,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
 
     self.emit_byte(Loop);
 
-    let offset = self.program.chunk().count - loop_start + 2;
+    let offset = self.program().chunk().count - loop_start + 2;
 
     if offset > (u16::MAX as usize) {
       self.parser.error("Loop body too large.");
@@ -269,7 +305,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn make_constant(&mut self, value: Value) -> u8 {
-    self.program.chunk().add_constant(value)
+    self.program().chunk().add_constant(value)
   }
 
   fn parse_and(&mut self, _can_assign: bool) {
@@ -368,7 +404,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn parse_for(&mut self) {
-    self.program.begin_scope();
+    self.program().begin_scope();
 
     self.parser.consume(&LeftParen, "Expect '(' after 'for'.");
 
@@ -378,7 +414,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       self.parse_expr_stmt();
     }
 
-    let mut loop_start_jt = JumpTarget(self.program.chunk().count);
+    let mut loop_start_jt = JumpTarget(self.program().chunk().count);
 
     let mut exit_jt_opt = None;
     if !self.token_is_a(&Semicolon) {
@@ -390,7 +426,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
 
     if !self.token_is_a(&RightParen) {
       let body_jt = self.emit_jump(Jump);
-      let inc_start_jt = JumpTarget(self.program.chunk().count);
+      let inc_start_jt = JumpTarget(self.program().chunk().count);
 
       self.parse_expression();
       self.emit_byte(Pop);
@@ -409,31 +445,40 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       self.emit_byte(Pop); // Discards the condition --Jason B. (8/24/26)
     }
 
-    for op_code in self.program.end_scope() {
+    for op_code in self.program().end_scope() {
       self.emit_byte(op_code);
     }
   }
 
-  fn parse_function(&mut self, kind: FunctionKind) {
-    let mut subcompiler = Compiler::new(self.parser, self.gc, kind);
-    subcompiler.program.begin_scope();
+  fn parse_function(&mut self) {
+    let function_obj = {
+      let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
+      let start_index = prev_loc.start_index as usize;
+      let length = prev_loc.length as usize;
+      let name_ptr = self.gc.copy_string(self.parser.source, start_index, length);
+      UserDefined { arity: 0, chunk: Chunk::default(), name_ptr, upvalue_count: 0 }
+    };
 
-    subcompiler.parser.consume(&LeftParen, "Expect '(' after function name.");
+    self.programs.push(Program::new(self.gc.allocate_function(function_obj), Function));
 
-    if subcompiler.parser.current_token_opt.as_ref().unwrap().typ != RightParen {
-      let function = unsafe { &mut *subcompiler.program.function_ptr };
+    self.program().begin_scope();
+
+    self.parser.consume(&LeftParen, "Expect '(' after function name.");
+
+    if self.parser.current_token_opt.as_ref().unwrap().typ != RightParen {
+      let function = unsafe { &mut *self.program().function_ptr };
       let mut arity = function.arity();
 
       loop {
         arity += 1;
         if arity > 255 {
-          subcompiler.parser.error("Can't have more than 255 parameters.");
+          self.parser.error("Can't have more than 255 parameters.");
         }
 
-        let constant = subcompiler.parse_variable("Expect parameter name.");
-        subcompiler.define_variable(constant);
+        let constant = self.parse_variable("Expect parameter name.");
+        self.define_variable(constant);
 
-        if !subcompiler.token_is_a(&Comma) {
+        if !self.token_is_a(&Comma) {
           break;
         }
       }
@@ -441,13 +486,28 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       function.set_arity(arity);
     }
 
-    subcompiler.parser.consume(&RightParen, "Expect ')' after parameters.");
-    subcompiler.parser.consume(&LeftBrace, "Expect '{' before function body.");
-    subcompiler.parse_block();
+    self.parser.consume(&RightParen, "Expect ')' after parameters.");
+    self.parser.consume(&LeftBrace, "Expect '{' before function body.");
+    self.parse_block();
 
-    let reference = Reference(HeapFunction(subcompiler.end()));
-    let constant = self.make_constant(ReferenceValue(reference));
-    self.emit_bytes(Constant, constant);
+    let upvalue_count = unsafe { &*self.program().function_ptr }.upvalue_count() as usize;
+    let pairs: Vec<(u8, bool)> = self.program().upvalues[0..upvalue_count]
+      .iter()
+      .flatten()
+      .map(|Upvalue { index, is_local }| (*index, *is_local))
+      .collect();
+
+    let reference = Reference(HeapFunction(self.end()));
+    let _ = self.programs.pop();
+
+    let closure = self.make_constant(ReferenceValue(reference));
+    self.emit_bytes(Closure, closure);
+
+    for (index, is_local) in pairs {
+      #[allow(clippy::obfuscated_if_else)]
+      self.emit_byte(is_local.then_some(1).unwrap_or(0));
+      self.emit_byte(index);
+    }
   }
 
   fn parse_function_call(&mut self, _can_assign: bool) {
@@ -457,8 +517,8 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
 
   fn parse_function_decl(&mut self) {
     let global_var_byte = self.parse_variable("Expect function name.");
-    self.program.mark_latest_var_initialized();
-    self.parse_function(Function);
+    self.program().mark_latest_var_initialized();
+    self.parse_function();
     self.define_variable(global_var_byte);
   }
 
@@ -533,7 +593,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn parse_return(&mut self) {
-    if self.program.function_kind == Script {
+    if self.program().function_kind == Script {
       self.parser.error("Can't return from top-level code.");
     } else if self.token_is_a(&Semicolon) {
       self.emit_return();
@@ -558,9 +618,9 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     } else if self.token_is_a(&While) {
       self.parse_while();
     } else if self.token_is_a(&LeftBrace) {
-      self.program.begin_scope();
+      self.program().begin_scope();
       self.parse_block();
-      for op_code in self.program.end_scope() {
+      for op_code in self.program().end_scope() {
         self.emit_byte(op_code);
       }
     } else {
@@ -615,9 +675,10 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       error_message,
     );
 
+    #[allow(clippy::option_if_let_else)]
     if let Some(name) = name_opt {
       self.declare_variable(name);
-      if self.program.scope_depth > 0 {
+      if self.program().scope_depth > 0 {
         0
       } else {
         self.make_ident_constant()
@@ -632,7 +693,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn parse_while(&mut self) {
-    let loop_start_jt = JumpTarget(self.program.chunk().count);
+    let loop_start_jt = JumpTarget(self.program().chunk().count);
 
     self.parser.consume(&LeftParen, "Expect '(' after 'while'.");
     self.parse_expression();
@@ -650,23 +711,25 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn add_local(&mut self, name: String) {
-    if self.program.local_var_count == u8::MAX {
+    if self.program().local_var_count == u8::MAX {
       self.parser.error("Too many local variables in function.");
     } else {
       let token = self.parser.previous_token_opt.clone().unwrap();
-      let local = LocalBinding { name, token, depth_opt: None };
-      let index = self.program.local_var_count as usize;
-      self.program.local_var_opts[index] = Some(local);
-      self.program.local_var_count += 1;
+      let local = LocalBinding { name, token, depth_opt: None, is_captured: false };
+      let index = self.program().local_var_count as usize;
+      self.program().local_var_opts[index] = Some(local);
+      self.program().local_var_count += 1;
     }
   }
 
   fn declare_variable(&mut self, new_var_name: String) {
-    if self.program.scope_depth > 0 {
-      for i in (0..self.program.local_var_count).rev() {
-        if let Some(LocalBinding { name, depth_opt, .. }) = self.program.local_var_opts[i as usize].as_ref() {
+    if self.program().scope_depth > 0 {
+      for i in (0..self.program().local_var_count).rev() {
+        let program = self.program();
+        let scope_depth = program.scope_depth;
+        if let Some(LocalBinding { name, depth_opt, .. }) = program.local_var_opts[i as usize].as_ref() {
           if let Some(depth) = depth_opt
-            && depth < &self.program.scope_depth
+            && depth < &scope_depth
           {
             break; // In this case, we're just shadowing, so no worries. --Jason B. (8/23/26)
           } else if &new_var_name == name {
@@ -679,24 +742,24 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn define_variable(&mut self, global_var: u8) {
-    if self.program.scope_depth == 0 {
+    if self.program().scope_depth == 0 {
       self.emit_bytes(DefineGlobal, global_var);
     } else {
-      self.program.mark_latest_var_initialized();
+      self.program().mark_latest_var_initialized();
     }
   }
 
   fn fill_in_jump_target(&mut self, jump_target: &JumpTarget) {
     let JumpTarget(offset) = jump_target;
-    let jt = self.program.chunk().count - offset - 2;
+    let jt = self.program().chunk().count - offset - 2;
 
     if jt > (u16::MAX as usize) {
       self.parser.error("Too much code to jump over.");
     }
 
     unsafe {
-      *self.program.chunk().op_codes.add(*offset) = u8::try_from((jt >> 8) & 0xff).unwrap();
-      *self.program.chunk().op_codes.add(offset + 1) = u8::try_from(jt & 0xff).unwrap();
+      *self.program().chunk().op_codes.add(*offset) = u8::try_from((jt >> 8) & 0xff).unwrap();
+      *self.program().chunk().op_codes.add(offset + 1) = u8::try_from(jt & 0xff).unwrap();
     }
   }
 
@@ -709,10 +772,14 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   fn make_named_variable(&mut self, can_assign: bool) {
     let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
     let name = &self.parser.source[(loc.start_index as usize)..((loc.start_index + loc.length) as usize)];
-    let (arg, get_op, set_op) = self.resolve_local(name).map_or_else(
-      || (self.make_ident_constant(), GetGlobal, SetGlobal),
-      |resolved| (resolved, GetLocal, SetLocal),
-    );
+    let program_index = self.programs.len() - 1;
+    let (arg, get_op, set_op) = if let Some(local_index) = self.resolve_local(program_index, name) {
+      (local_index, GetLocal, SetLocal)
+    } else if let Some(x) = self.resolve_upvalue(self.programs.len() - 1, name) {
+      (x, GetUpvalue, SetUpvalue)
+    } else {
+      (self.make_ident_constant(), GetGlobal, SetGlobal)
+    };
 
     if can_assign && self.token_is_a(&Equal) {
       self.parse_expression();
@@ -722,9 +789,29 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
-  fn resolve_local(&mut self, target_name: &str) -> Option<u8> {
-    for i in (0..self.program.local_var_count).rev() {
-      if let Some(LocalBinding { name, depth_opt, .. }) = self.program.local_var_opts[i as usize].as_ref()
+  fn register_upvalue(&mut self, pindex: usize, index: u8, is_local: bool) -> Option<u8> {
+    let upvalue_count = unsafe { &*self.program_at(pindex).function_ptr }.upvalue_count();
+    if upvalue_count == u8::MAX {
+      self.parser.error("Too many closure variables in function.");
+      None
+    } else {
+      let target_uv_opt = Some(Upvalue { index, is_local });
+      let upvalue_index = upvalue_count as usize;
+      let mut upvalues = self.program_at(pindex).upvalues[0..upvalue_index].iter();
+      upvalues.position(|upvalue| &target_uv_opt == upvalue).map(|pos| u8::try_from(pos).unwrap()).or_else(
+        || {
+          self.program_at(pindex).upvalues[upvalue_index] = target_uv_opt;
+          unsafe { &mut *self.program_at(pindex).function_ptr }.increment_upvalue_count();
+          Some(upvalue_count)
+        },
+      )
+    }
+  }
+
+  fn resolve_local(&mut self, program_index: usize, target_name: &str) -> Option<u8> {
+    for i in (0..self.program_at(program_index).local_var_count).rev() {
+      if let Some(LocalBinding { name, depth_opt, .. }) =
+        self.program_at(program_index).local_var_opts[i as usize].as_ref()
         && target_name == name
       {
         if depth_opt.is_none() {
@@ -735,6 +822,20 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       }
     }
     None
+  }
+
+  fn resolve_upvalue(&mut self, program_index: usize, target_name: &str) -> Option<u8> {
+    if self.program_at(program_index).function_kind != Function || program_index == 0 {
+      None
+    } else if let Some(local_index) = self.resolve_local(program_index - 1, target_name) {
+      let program = self.program_at(program_index - 1);
+      program.local_var_opts[local_index as usize].as_mut().unwrap().mark_captured();
+      self.register_upvalue(program_index, local_index, true)
+    } else if let Some(upvalue_index) = self.resolve_upvalue(program_index - 1, target_name) {
+      self.register_upvalue(program_index, upvalue_index, false)
+    } else {
+      None
+    }
   }
 
   fn synchronize(&mut self) {

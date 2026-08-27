@@ -1,10 +1,14 @@
 use crate::chunk::Chunk;
 
+use crate::gc::{HeapObject::HeapFunction, Reference};
+
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal, GetLocal, Greater, Jump,
-  JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract,
-  True,
+  self, Add, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
+  GetLocal, GetUpvalue, Greater, Jump, JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop, Print,
+  Return, SetGlobal, SetLocal, SetUpvalue, Subtract, True,
 };
+
+use crate::value::Value::ReferenceValue;
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
   println!("== {name} ==");
@@ -29,11 +33,12 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
   match OpCode::from_repr(ordinal) {
     Some(x @ (Constant | DefineGlobal | GetGlobal | SetGlobal)) => constant_instruction(&x, chunk, offset),
     Some(
-      x @ (Add | Divide | Equal | False | Greater | Less | Multiply | Negate | Nil | Not | Print | Pop
-      | Return | Subtract | True),
+      x @ (Add | CloseUpvalue | Divide | Equal | False | Greater | Less | Multiply | Negate | Nil | Not
+      | Print | Pop | Return | Subtract | True),
     ) => simple_instruction(&x, offset),
-    Some(x @ (FnCall | GetLocal | SetLocal)) => byte_instruction(&x, chunk, offset),
+    Some(x @ (FnCall | GetLocal | GetUpvalue | SetLocal | SetUpvalue)) => byte_instruction(&x, chunk, offset),
     Some(x @ (Jump | JumpIfFalse | Loop)) => jump_instruction(&x, 1, chunk, offset),
+    Some(x @ Closure) => closure_instruction(&x, chunk, offset),
     None => {
       println!("Unknown opcode: {chunk:?} | {offset}");
       offset + 1
@@ -45,6 +50,33 @@ fn byte_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize {
   let slot_num = unsafe { *chunk.op_codes.add(offset + 1) };
   println!("{op_code:<16?} {slot_num:>4}");
   offset + 2
+}
+
+fn closure_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize {
+  let mut wip_offset = offset + 1;
+  let constant_index = unsafe { *chunk.op_codes.add(wip_offset) };
+  wip_offset += 1;
+
+  let value_obj = unsafe { &*chunk.constants.values.add(constant_index as usize) };
+  let value_str = value_obj.stringify();
+  println!("{op_code:<16?} {constant_index:>4} {value_str}");
+
+  if let ReferenceValue(Reference(HeapFunction(function_obj_ptr))) = value_obj {
+    let upvalue_count = unsafe { &**function_obj_ptr }.upvalue_count();
+    for _ in 0..upvalue_count {
+      let is_local = unsafe { &*chunk.op_codes.add(wip_offset) };
+      wip_offset += 1;
+      let upvalue_index = unsafe { &*chunk.op_codes.add(wip_offset) };
+      wip_offset += 1;
+
+      #[allow(clippy::obfuscated_if_else)]
+      let locality = (*is_local == 1).then_some("local").unwrap_or("upvalue");
+      println!("{}      |                     {locality} {upvalue_index}", wip_offset - 2);
+    }
+    wip_offset
+  } else {
+    panic!("Bad instruction!");
+  }
 }
 
 fn constant_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize {

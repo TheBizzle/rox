@@ -13,14 +13,14 @@ use crate::compiler::{
 
 use crate::disassembler::disassemble_instruction;
 
-use crate::gc::FunctionObj::{self, MainScript, UserDefined};
-use crate::gc::HeapObject::{HeapFunction, HeapNativeFn, HeapString};
-use crate::gc::{Gc, NativeFnObj, Reference, refs_are_equal};
+use crate::gc::FunctionObj::{MainScript, UserDefined};
+use crate::gc::HeapObject::{HeapClosure, HeapFunction, HeapNativeFn, HeapString};
+use crate::gc::{ClosureObj, Gc, NativeFnObj, Reference, UpvalueObj, refs_are_equal};
 
 use crate::opcode::OpCode::{
-  self, Add, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal, GetLocal, Greater, Jump,
-  JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, Subtract,
-  True,
+  self, Add, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
+  GetLocal, GetUpvalue, Greater, Jump, JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop, Print,
+  Return, SetGlobal, SetLocal, SetUpvalue, Subtract, True,
 };
 
 use crate::value::Value::{self, Boolean, Double, Nil as NilValue, ReferenceValue};
@@ -42,14 +42,14 @@ use Interpretation::{CompilationError, RuntimeError, Success};
 #[derive(Debug)]
 #[allow(clippy::struct_field_names)]
 pub struct CallFrame {
-  function_ptr: *mut FunctionObj,
+  closure_ptr: *mut ClosureObj,
   inst_ptr: *mut u8,
   slots_ptr: *mut Value,
 }
 
 impl Default for CallFrame {
   fn default() -> Self {
-    Self { function_ptr: null_mut(), inst_ptr: null_mut(), slots_ptr: null_mut() }
+    Self { closure_ptr: null_mut(), inst_ptr: null_mut(), slots_ptr: null_mut() }
   }
 }
 
@@ -111,10 +111,13 @@ impl VM {
 
   #[allow(clippy::option_if_let_else)]
   pub fn interpret(&mut self, source: &str) -> Interpretation {
-    if let Some(fn_ptr) = compile(source, &mut self.gc) {
-      self.push(ReferenceValue(Reference(HeapFunction(fn_ptr))));
+    if let Some(function_obj_ptr) = compile(source, &mut self.gc) {
+      self.push(ReferenceValue(Reference(HeapFunction(function_obj_ptr))));
 
-      let _ = self.call_function_for_error(fn_ptr, 0, &Script);
+      let closure_obj_ptr = self.gc.allocate_closure(function_obj_ptr);
+      let _ = self.pop();
+      self.push(ReferenceValue(Reference(HeapClosure(closure_obj_ptr))));
+      let _ = self.call_function_for_error(closure_obj_ptr, 0, &Script);
 
       self.run()
     } else {
@@ -185,7 +188,8 @@ impl VM {
       () => {{
         let byte = read_u8!() as usize;
         let current = &mut self.frames[self.current_frame_index];
-        let chunk = unsafe { &*current.function_ptr }.chunk();
+        let closure = unsafe { &*current.closure_ptr };
+        let chunk = unsafe { &*closure.function_obj_ptr }.chunk();
         unsafe { ptr::read(chunk.constants.values.add(byte)) }
       }};
     }
@@ -219,7 +223,8 @@ impl VM {
         println!();
 
         let current = &self.frames[self.current_frame_index];
-        let chunk = unsafe { &*current.function_ptr }.chunk();
+        let closure = unsafe { &*current.closure_ptr };
+        let chunk = unsafe { &*closure.function_obj_ptr }.chunk();
         let offset = unsafe { current.inst_ptr.offset_from(chunk.op_codes).cast_unsigned() };
         disassemble_instruction(chunk, offset);
       }
@@ -247,6 +252,42 @@ impl VM {
           }
         },
 
+        Some(CloseUpvalue) => {
+          self.gc.close_upvalues(unsafe { self.stack_top.sub(1) });
+          self.pop();
+          Continue
+        },
+        Some(Closure) => {
+          let constant = read_constant!();
+          if let ReferenceValue(Reference(HeapFunction(function_obj_ptr))) = constant {
+            let closure_ptr = self.gc.allocate_closure(function_obj_ptr);
+            let result = push_and_win!(ReferenceValue(Reference(HeapClosure(closure_ptr))));
+
+            let closure = unsafe { &*closure_ptr };
+
+            let current_frame = &mut self.frames[self.current_frame_index];
+            let slots_ptr = current_frame.slots_ptr;
+            let owning_closure = unsafe { &*current_frame.closure_ptr };
+
+            for i in 0..(closure.upvalue_count as usize) {
+              let is_local = read_u8!();
+              let index = read_u8!() as usize;
+
+              if is_local == 1 {
+                unsafe {
+                  let value_ptr = slots_ptr.add(index);
+                  *closure.upvalues_ptr_ptr.add(i) = self.capture_upvalue(value_ptr);
+                }
+              } else {
+                unsafe { *closure.upvalues_ptr_ptr.add(i) = *owning_closure.upvalues_ptr_ptr.add(index) };
+              }
+            }
+
+            result
+          } else {
+            runtime_error!("Tried to read a function and got this: {constant:?}")
+          }
+        },
         Some(Constant) => {
           push_and_win!(read_constant!())
         },
@@ -286,6 +327,14 @@ impl VM {
           let slot_num = read_u8!();
           let slots_ptr = self.frames[self.current_frame_index].slots_ptr;
           let value = unsafe { &*slots_ptr.add(slot_num as usize) }.clone();
+          push_and_win!(value)
+        },
+        Some(GetUpvalue) => {
+          let slot = read_u8!() as usize;
+          let current = &mut self.frames[self.current_frame_index];
+          let closure = unsafe { &*current.closure_ptr };
+          let value_ptr = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.value_ptr;
+          let value = unsafe { &*value_ptr }.clone();
           push_and_win!(value)
         },
         Some(Greater) => binary_op!(Boolean, >),
@@ -342,6 +391,7 @@ impl VM {
 
         Some(Return) => {
           let result = self.pop();
+          self.gc.close_upvalues(self.frames[self.current_frame_index].slots_ptr);
           if self.current_frame_index == 0 {
             let _ = self.pop();
             Done
@@ -373,6 +423,15 @@ impl VM {
           unsafe { *slots_ptr.add(slot_num as usize) = value };
           Continue
         },
+        Some(SetUpvalue) => {
+          let slot = read_u8!() as usize;
+          let current = &mut self.frames[self.current_frame_index];
+          let closure = unsafe { &*current.closure_ptr };
+          let value_ptr = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.value_ptr;
+          let new_value = self.peek(0);
+          unsafe { *value_ptr = new_value };
+          Continue
+        },
         Some(Subtract) => binary_op!(Double, -),
 
         Some(True) => push_and_win!(Boolean(true)),
@@ -396,9 +455,10 @@ impl VM {
   }
 
   fn call_function_for_error(
-    &mut self, func_ptr: *mut FunctionObj, arg_count: u8, function_kind: &FunctionKind,
+    &mut self, closure_obj_ptr: *mut ClosureObj, arg_count: u8, function_kind: &FunctionKind,
   ) -> Option<ProgressState> {
-    let callee = unsafe { &*func_ptr };
+    let ClosureObj { function_obj_ptr, .. } = unsafe { &*closure_obj_ptr };
+    let callee = unsafe { &**function_obj_ptr };
 
     if u32::from(arg_count) == callee.arity() {
       if self.current_frame_index == (FRAMES_MAX - 1) {
@@ -410,7 +470,7 @@ impl VM {
         }
         let current = &mut self.frames[self.current_frame_index];
 
-        current.function_ptr = func_ptr;
+        current.closure_ptr = closure_obj_ptr;
         current.inst_ptr = callee.chunk().op_codes;
         current.slots_ptr = unsafe { self.stack_top.sub((arg_count + 1) as usize) };
 
@@ -424,8 +484,8 @@ impl VM {
 
   fn call_value_for_error(&mut self, callee: &Value, arg_count: u8) -> Option<ProgressState> {
     match callee {
-      ReferenceValue(Reference(HeapFunction(func_ptr))) if !func_ptr.is_null() => {
-        self.call_function_for_error(*func_ptr, arg_count, &Function)
+      ReferenceValue(Reference(HeapClosure(closure_obj_ptr))) if !closure_obj_ptr.is_null() => {
+        self.call_function_for_error(*closure_obj_ptr, arg_count, &Function)
       },
       ReferenceValue(Reference(HeapNativeFn(native_fn_ptr))) if !native_fn_ptr.is_null() => {
         let native_fn = unsafe { &**native_fn_ptr };
@@ -438,6 +498,38 @@ impl VM {
         self.runtime_error_impl(format_args!("Can only call functions and classes."));
         Some(Error)
       },
+    }
+  }
+
+  fn capture_upvalue(&mut self, target_value_ptr: *mut Value) -> *mut UpvalueObj {
+    let mut prev_upvalue_opt = None;
+    let mut upvalue_opt = self.gc.head_open_upvalue_opt;
+
+    while let Some(upvalue_ptr) = upvalue_opt
+      && let UpvalueObj { closed_value: NilValue, next_opt, value_ptr } = unsafe { &*upvalue_ptr }
+      && value_ptr > &target_value_ptr
+    {
+      prev_upvalue_opt = upvalue_opt.take();
+      upvalue_opt = *next_opt;
+    }
+
+    if let Some(upvalue_ptr) = upvalue_opt
+      && let upvalue = unsafe { &*upvalue_ptr }
+      && upvalue.value_ptr == target_value_ptr
+    {
+      upvalue_ptr
+    } else {
+      let upvalue_obj = UpvalueObj { closed_value: NilValue, next_opt: None, value_ptr: target_value_ptr };
+      let allocated_upvalue_ptr = self.gc.allocate_upvalue(upvalue_obj);
+
+      if let Some(prev_upvalue_ptr) = prev_upvalue_opt {
+        let prev_upvalue = unsafe { &mut *prev_upvalue_ptr };
+        prev_upvalue.next_opt = Some(allocated_upvalue_ptr);
+      } else {
+        self.gc.head_open_upvalue_opt = Some(allocated_upvalue_ptr);
+      }
+
+      allocated_upvalue_ptr
     }
   }
 
@@ -462,7 +554,8 @@ impl VM {
 
     for i in (0..=self.current_frame_index).rev() {
       let frame = &mut self.frames[i];
-      let function = unsafe { &*frame.function_ptr };
+      let closure = unsafe { &*frame.closure_ptr };
+      let function = unsafe { &*closure.function_obj_ptr };
       let op_codes_ptr = function.chunk().op_codes;
       let instruction = unsafe { frame.inst_ptr.offset_from(op_codes_ptr) }.cast_unsigned() - 1;
 
