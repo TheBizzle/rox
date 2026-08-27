@@ -423,21 +423,21 @@ impl VM {
   }
 
   fn call_value_for_error(&mut self, callee: &Value, arg_count: u8) -> Option<ProgressState> {
-    if let ReferenceValue(Reference(HeapFunction(func_ptr))) = callee
-      && !func_ptr.is_null()
-    {
-      self.call_function_for_error(*func_ptr, arg_count, &Function)
-    } else if let ReferenceValue(Reference(HeapNativeFn(native_fn_ptr))) = callee
-      && !native_fn_ptr.is_null()
-    {
-      let native_fn = unsafe { &**native_fn_ptr };
-      let result = native_fn.invoke(arg_count, unsafe { self.stack_top.sub(arg_count as usize) });
-      unsafe { self.stack_top = self.stack_top.sub((arg_count + 1) as usize) };
-      self.push(result);
-      None
-    } else {
-      self.runtime_error_impl(format_args!("Can only call functions and classes."));
-      Some(Error)
+    match callee {
+      ReferenceValue(Reference(HeapFunction(func_ptr))) if !func_ptr.is_null() => {
+        self.call_function_for_error(*func_ptr, arg_count, &Function)
+      },
+      ReferenceValue(Reference(HeapNativeFn(native_fn_ptr))) if !native_fn_ptr.is_null() => {
+        let native_fn = unsafe { &**native_fn_ptr };
+        let result = native_fn.invoke(arg_count, unsafe { self.stack_top.sub(arg_count as usize) });
+        unsafe { self.stack_top = self.stack_top.sub((arg_count + 1) as usize) };
+        self.push(result);
+        None
+      },
+      _ => {
+        self.runtime_error_impl(format_args!("Can only call functions and classes."));
+        Some(Error)
+      },
     }
   }
 
