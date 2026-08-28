@@ -3,19 +3,20 @@ use crate::lexer::Lexer;
 use crate::token::Token;
 use crate::token::TokenType::{self, Eof};
 
-pub struct Parser<'a> {
-  lexer: Lexer<'a>,
+pub struct Parser {
+  lexer: Lexer,
   pub(super) current_token_opt: Option<Token>,
   pub(super) previous_token_opt: Option<Token>,
   pub(super) had_error: bool,
   pub(super) is_panicking: bool,
-  pub(super) source: &'a str,
+  pub(super) source: String,
 }
 
-impl Parser<'_> {
-  pub fn new(source: &'_ str) -> Parser<'_> {
-    Parser {
-      lexer: Lexer::new(source),
+impl Parser {
+  pub fn new(source: String) -> Self {
+    let chars = source.chars().collect::<Vec<_>>().into_iter().peekable();
+    Self {
+      lexer: Lexer::new(chars),
       current_token_opt: None,
       previous_token_opt: None,
       had_error: false,
@@ -35,7 +36,7 @@ impl Parser<'_> {
         },
         Err(_error) => {
           // TODO: I don't think this is right...
-          let message = self.current_token_opt.as_ref().unwrap().loc.extract(self.source);
+          let message = self.current_token_opt.as_ref().unwrap().loc.extract(&self.source);
           self.error_at_current(&message);
         },
       }
@@ -84,7 +85,7 @@ impl Parser<'_> {
       },
       // TODO: And handle (i.e. do nothing) when "error token" was "emitted"
       _ => {
-        eprint!(" at '{}'", loc.extract(self.source));
+        eprint!(" at '{}'", loc.extract(&self.source));
       },
     }
 

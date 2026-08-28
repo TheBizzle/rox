@@ -52,47 +52,44 @@ impl Precedence {
   }
 }
 
-type ParseFn<'a, 'b, 'c> = fn(&mut Compiler<'a, 'b, 'c>, bool);
+type ParseFn = fn(&mut Compiler, bool);
 
-struct ParseRule<'a, 'b, 'c> {
-  prefix: Option<ParseFn<'a, 'b, 'c>>,
-  infix: Option<ParseFn<'a, 'b, 'c>>,
+struct ParseRule {
+  prefix: Option<ParseFn>,
+  infix: Option<ParseFn>,
   precedence: Precedence,
 }
 
-fn rule_for<'a, 'b, 'c>(typ: &TokenType) -> ParseRule<'a, 'b, 'c> {
-  let (prefix, infix, precedence): (Option<ParseFn<'a, 'b, 'c>>, Option<ParseFn<'a, 'b, 'c>>, Precedence) =
-    match typ {
-      LeftParen => (Some(Compiler::parse_grouping), Some(Compiler::parse_function_call), Precedence::Call),
+fn rule_for(typ: &TokenType) -> ParseRule {
+  let (prefix, infix, precedence): (Option<ParseFn>, Option<ParseFn>, Precedence) = match typ {
+    LeftParen => (Some(Compiler::parse_grouping), Some(Compiler::parse_function_call), Precedence::Call),
 
-      Slash | Star => (None, Some(Compiler::parse_binary), Precedence::Factor),
+    Slash | Star => (None, Some(Compiler::parse_binary), Precedence::Factor),
 
-      Minus => (Some(Compiler::parse_unary), Some(Compiler::parse_binary), Precedence::Term),
+    Minus => (Some(Compiler::parse_unary), Some(Compiler::parse_binary), Precedence::Term),
 
-      Plus => (None, Some(Compiler::parse_binary), Precedence::Term),
+    Plus => (None, Some(Compiler::parse_binary), Precedence::Term),
 
-      Greater | GreaterEqual | Less | LessEqual => {
-        (None, Some(Compiler::parse_binary), Precedence::Comparison)
-      },
+    Greater | GreaterEqual | Less | LessEqual => (None, Some(Compiler::parse_binary), Precedence::Comparison),
 
-      BangEqual | EqualEqual => (None, Some(Compiler::parse_binary), Precedence::Equality),
+    BangEqual | EqualEqual => (None, Some(Compiler::parse_binary), Precedence::Equality),
 
-      And => (None, Some(Compiler::parse_and), Precedence::And),
+    And => (None, Some(Compiler::parse_and), Precedence::And),
 
-      Or => (None, Some(Compiler::parse_or), Precedence::Or),
+    Or => (None, Some(Compiler::parse_or), Precedence::Or),
 
-      Number(_) => (Some(Compiler::parse_number), None, Precedence::Bupkis),
+    Number(_) => (Some(Compiler::parse_number), None, Precedence::Bupkis),
 
-      LoxString(_) => (Some(Compiler::parse_string), None, Precedence::Bupkis),
+    LoxString(_) => (Some(Compiler::parse_string), None, Precedence::Bupkis),
 
-      Bang => (Some(Compiler::parse_unary), None, Precedence::Bupkis),
+    Bang => (Some(Compiler::parse_unary), None, Precedence::Bupkis),
 
-      False | Nil | True => (Some(Compiler::parse_literal), None, Precedence::Bupkis),
+    False | Nil | True => (Some(Compiler::parse_literal), None, Precedence::Bupkis),
 
-      Identifier(_) => (Some(Compiler::parse_var_reference), None, Precedence::Bupkis),
+    Identifier(_) => (Some(Compiler::parse_var_reference), None, Precedence::Bupkis),
 
-      _ => (None, None, Precedence::Bupkis),
-    };
+    _ => (None, None, Precedence::Bupkis),
+  };
 
   ParseRule { prefix, infix, precedence }
 }
@@ -226,13 +223,13 @@ impl Program {
   }
 }
 
-struct Compiler<'a, 'b, 'c> {
-  parser: &'a mut Parser<'b>,
+pub struct Compiler {
+  parser: Parser,
   programs: Vec<Program>,
-  gc: &'c mut Gc,
+  pub gc: Gc,
 }
 
-impl Compiler<'_, '_, '_> {
+impl Compiler {
   fn program(&mut self) -> &mut Program {
     self.programs.last_mut().unwrap()
   }
@@ -242,26 +239,29 @@ impl Compiler<'_, '_, '_> {
   }
 }
 
-pub fn compile(source: &str, gc: &mut Gc) -> Option<(*mut FunctionObj, *mut GcObject)> {
-  let mut parser = Parser::new(source);
-  let mut compiler = Compiler::new(&mut parser, gc);
-
-  compiler.parser.advance();
-
-  while !compiler.token_is_a(&Eof) {
-    compiler.parse_declaration();
-  }
-
-  let result_ptr = compiler.end();
-
-  (!compiler.parser.had_error).then_some(result_ptr)
-}
-
-impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
-  pub fn new(parser: &'a mut Parser<'b>, gc: &'c mut Gc) -> Self {
+impl Default for Compiler {
+  fn default() -> Self {
+    let parser = Parser::new(String::new());
+    let mut gc = Gc::new();
     let function_obj = MainScript { arity: 0, chunk: Chunk::default(), upvalue_count: 0 };
     let programs = vec![Program::new(gc.allocate_function(function_obj), Script)];
+
     Self { parser, programs, gc }
+  }
+}
+
+impl Compiler {
+  pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {
+    self.parser = Parser::new(source);
+
+    self.parser.advance();
+
+    while !self.token_is_a(&Eof) {
+      self.parse_declaration();
+    }
+
+    let result_ptr = self.end();
+    (!self.parser.had_error).then_some(result_ptr)
   }
 
   fn end(&mut self) -> (*mut FunctionObj, *mut GcObject) {
@@ -474,7 +474,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
       let start_index = prev_loc.start_index as usize;
       let length = prev_loc.length as usize;
-      let (_, name_gc_ptr) = self.gc.copy_string(self.parser.source, start_index, length);
+      let (_, name_gc_ptr) = self.gc.copy_string(&self.parser.source, start_index, length);
       UserDefined { arity: 0, chunk: Chunk::default(), name_gc_ptr, upvalue_count: 0 }
     };
 
@@ -650,7 +650,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
     let str_start = (prev_loc.start_index + 1) as usize;
     let length = (prev_loc.length - 2) as usize;
-    let (_, gc_ptr) = self.gc.copy_string(self.parser.source, str_start, length);
+    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, str_start, length);
     self.emit_constant(Reference(gc_ptr));
   }
 
@@ -783,13 +783,14 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
 
   fn make_ident_constant(&mut self) -> u8 {
     let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
-    let (_, gc_ptr) = self.gc.copy_string(self.parser.source, loc.start_index as usize, loc.length as usize);
+    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, loc.start_index as usize, loc.length as usize);
     self.make_constant(Reference(gc_ptr))
   }
 
   fn make_named_variable(&mut self, can_assign: bool) {
     let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
-    let name = &self.parser.source[(loc.start_index as usize)..((loc.start_index + loc.length) as usize)];
+    let name =
+      &self.parser.source[(loc.start_index as usize)..((loc.start_index + loc.length) as usize)].to_string();
     let program_index = self.programs.len() - 1;
     let (arg, get_op, set_op) = if let Some(local_index) = self.resolve_local(program_index, name) {
       (local_index, GetLocal, SetLocal)
@@ -870,6 +871,8 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     }
   }
 
+  /// # Panics
+  /// When current token doesn't exist
   pub fn token_is_a(&mut self, typ: &TokenType) -> bool {
     if &self.parser.current_token_opt.as_ref().unwrap().typ != typ {
       return false;

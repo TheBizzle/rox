@@ -1,6 +1,5 @@
-use core::str::Chars;
-
 use std::iter::Peekable;
+use std::vec::IntoIter;
 
 use crate::error::LexerError::{self, UnexpectedToken, UnterminatedString};
 use crate::token::TokenType::{
@@ -10,17 +9,17 @@ use crate::token::TokenType::{
 };
 use crate::token::{SourceLoc, Token};
 
-pub struct Lexer<'a> {
-  chars: Peekable<Chars<'a>>,
+pub struct Lexer {
+  chars: Peekable<IntoIter<char>>,
   pos: u32,
   pos_prior: u32,
   last_newline_pos: u32,
   line_num: u32,
 }
 
-impl Lexer<'_> {
-  pub fn new(source: &'_ str) -> Lexer<'_> {
-    Lexer { chars: source.chars().peekable(), pos: 0, pos_prior: 0, last_newline_pos: 0, line_num: 1 }
+impl Lexer {
+  pub const fn new(chars: Peekable<IntoIter<char>>) -> Self {
+    Self { chars, pos: 0, pos_prior: 0, last_newline_pos: 0, line_num: 1 }
   }
 
   pub fn next_token(&mut self) -> Result<Token, LexerError> {

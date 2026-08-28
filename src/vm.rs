@@ -7,8 +7,8 @@ use std::sync::LazyLock;
 use std::time::Instant;
 
 use crate::compiler::{
+  Compiler,
   FunctionKind::{self, Function, Script},
-  compile,
 };
 
 use crate::disassembler::disassemble_instruction;
@@ -65,9 +65,9 @@ impl Default for CallFrame {
 
 // Need to hold onto `_stack`, so Rust doesn't overwrite its memory --Jason B. (8/16/26)
 pub struct VM {
+  compiler: Compiler,
   current_frame_index: usize,
   frames: [CallFrame; FRAMES_MAX],
-  gc: Gc,
   _stack: Box<[Value; STACK_MAX]>,
   stack_addr: *mut Value,
   stack_top: *mut Value,
@@ -90,9 +90,9 @@ impl VM {
     let stack_top = stack.as_mut_ptr();
 
     let mut this = Self {
+      compiler: Compiler::default(),
       current_frame_index: 0,
       frames,
-      gc: Gc::new(),
       _stack: Box::new(stack),
       stack_addr,
       stack_top,
@@ -113,18 +113,19 @@ impl VM {
   ///
   /// When a lock cannot be acquired on the objects for GC'ing.
   pub fn free(&mut self) -> &Self {
-    self.gc.free();
-    self.gc = Gc::new();
+    self.compiler.gc.free();
+    self.compiler.gc = Gc::new();
 
     self
   }
 
   #[allow(clippy::option_if_let_else)]
-  pub fn interpret(&mut self, source: &str) -> Interpretation {
-    if let Some((_, function_gc_ptr)) = compile(source, &mut self.gc) {
+  pub fn interpret(&mut self, source: String) -> Interpretation {
+    self.compiler = Compiler::default();
+    if let Some((_, function_gc_ptr)) = self.compiler.run(source) {
       self.push(Reference(function_gc_ptr));
 
-      let (closure_ptr, closure_gc_ptr) = self.gc.allocate_closure(function_gc_ptr);
+      let (closure_ptr, closure_gc_ptr) = self.compiler.gc.allocate_closure(function_gc_ptr);
       let _ = self.pop();
       self.push(Reference(closure_gc_ptr));
       let _ = self.call_function_for_error(closure_ptr, closure_gc_ptr, 0, &Script);
@@ -257,14 +258,14 @@ impl VM {
               if let GcObject { object: HeapString(str1), .. } = unsafe { &*x }
                 && let GcObject { object: HeapString(str2), .. } = unsafe { &*y } =>
             {
-              push_and_win!(Reference(self.gc.concatenate_strings(*str1, *str2).1))
+              push_and_win!(Reference(self.compiler.gc.concatenate_strings(*str1, *str2).1))
             },
             _ => runtime_error!("Operands must be two numbers or two strings."),
           }
         },
 
         Some(CloseUpvalue) => {
-          self.gc.close_upvalues(unsafe { self.stack_top.sub(1) });
+          self.compiler.gc.close_upvalues(unsafe { self.stack_top.sub(1) });
           self.pop();
           Continue
         },
@@ -274,7 +275,7 @@ impl VM {
             && let GcObject { object, .. } = unsafe { &*fn_gc_ptr }
             && let HeapFunction(_) = object
           {
-            let (closure_ptr, closure_gc_ptr) = self.gc.allocate_closure(fn_gc_ptr);
+            let (closure_ptr, closure_gc_ptr) = self.compiler.gc.allocate_closure(fn_gc_ptr);
             let result = push_and_win!(Reference(closure_gc_ptr));
 
             let closure = unsafe { &*closure_ptr };
@@ -308,7 +309,7 @@ impl VM {
         Some(DefineGlobal) => {
           let value = self.peek(0);
           let (_, key_gc_ptr) = read_string!();
-          self.gc.globals.set(key_gc_ptr, value);
+          self.compiler.gc.globals.set(key_gc_ptr, value);
           let _ = self.pop();
           Continue
         },
@@ -329,7 +330,7 @@ impl VM {
 
         Some(GetGlobal) => {
           let (name_ptr, _) = read_string!();
-          if let Some(r) = self.gc.globals.get(name_ptr) {
+          if let Some(r) = self.compiler.gc.globals.get(name_ptr) {
             let value = unsafe { &*r }.clone();
             push_and_win!(value)
           } else {
@@ -407,7 +408,7 @@ impl VM {
 
         Some(Return) => {
           let result = self.pop();
-          self.gc.close_upvalues(self.frames[self.current_frame_index].slots_ptr);
+          self.compiler.gc.close_upvalues(self.frames[self.current_frame_index].slots_ptr);
           if self.current_frame_index == 0 {
             let _ = self.pop();
             Done
@@ -422,10 +423,10 @@ impl VM {
         Some(SetGlobal) => {
           let (name_str_ptr, name_gc_ptr) = read_string!();
           let value = self.peek(0);
-          let is_binding_new = self.gc.globals.set(name_gc_ptr, value);
+          let is_binding_new = self.compiler.gc.globals.set(name_gc_ptr, value);
 
           if is_binding_new {
-            self.gc.globals.delete(name_str_ptr);
+            self.compiler.gc.globals.delete(name_str_ptr);
             runtime_error!("Undefined variable '{:?}'.", unsafe { &*name_str_ptr }.chars)
           } else {
             Continue
@@ -523,7 +524,7 @@ impl VM {
 
   fn capture_upvalue(&mut self, target_value_ptr: *mut Value) -> *mut GcObject {
     let mut prev_upvalue_opt = None;
-    let mut upvalue_opt = self.gc.head_open_upvalue_gc_opt;
+    let mut upvalue_opt = self.compiler.gc.head_open_upvalue_gc_opt;
 
     while let Some(upvalue_gc_ptr) = upvalue_opt
       && let HeapUpvalue(upvalue_ptr) = unsafe { &*upvalue_gc_ptr }.object
@@ -542,7 +543,7 @@ impl VM {
       upvalue_gc_ptr
     } else {
       let upvalue_obj = UpvalueObj { closed_value: NilValue, next_gc_opt: None, value_ptr: target_value_ptr };
-      let (_, allocated_gc_ptr) = self.gc.allocate_upvalue(upvalue_obj);
+      let (_, allocated_gc_ptr) = self.compiler.gc.allocate_upvalue(upvalue_obj);
 
       if let Some(prev_upvalue_gc_ptr) = prev_upvalue_opt
         && let HeapUpvalue(upvalue_ptr) = unsafe { &*prev_upvalue_gc_ptr }.object
@@ -550,7 +551,7 @@ impl VM {
         let prev_upvalue = unsafe { &mut *upvalue_ptr };
         prev_upvalue.next_gc_opt = Some(allocated_gc_ptr);
       } else {
-        self.gc.head_open_upvalue_gc_opt = Some(allocated_gc_ptr);
+        self.compiler.gc.head_open_upvalue_gc_opt = Some(allocated_gc_ptr);
       }
 
       allocated_gc_ptr
@@ -558,15 +559,15 @@ impl VM {
   }
 
   pub fn define_native_fn(&mut self, name: &str, native_fn: NativeFnObj) {
-    let (_, name_gc_ptr) = self.gc.copy_string(name, 0, name.len());
-    let native_fn_gc_ptr = self.gc.allocate_native_fn(native_fn);
+    let (_, name_gc_ptr) = self.compiler.gc.copy_string(name, 0, name.len());
+    let native_fn_gc_ptr = self.compiler.gc.allocate_native_fn(native_fn);
 
     let name_value = Reference(name_gc_ptr);
     let native_fn_value = Reference(native_fn_gc_ptr);
     self.push(name_value);
     self.push(native_fn_value.clone());
 
-    self.gc.globals.set(name_gc_ptr, native_fn_value);
+    self.compiler.gc.globals.set(name_gc_ptr, native_fn_value);
 
     self.pop();
     self.pop();

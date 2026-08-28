@@ -44,7 +44,7 @@ fn run_repl(vm: &mut VM) {
         exit(0);
       },
       Ok(_) => {
-        vm.interpret(&input);
+        vm.interpret(input.clone());
       },
     }
   }
@@ -57,8 +57,7 @@ fn run_file(vm: &mut VM, filepath: &str) {
       exit(74);
     },
     Ok(source) => {
-      let result = vm.interpret(&source);
-      drop(source);
+      let result = vm.interpret(source);
 
       match result {
         CompilationError => exit(65),
