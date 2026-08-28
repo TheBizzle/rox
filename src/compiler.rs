@@ -15,7 +15,7 @@ use crate::parser::Parser;
 
 use crate::gc::FunctionObj::{self, MainScript, UserDefined};
 use crate::gc::HeapObject::{HeapFunction, HeapString};
-use crate::gc::{Gc, Reference};
+use crate::gc::{Gc, GcObject};
 
 use crate::token::Token;
 use crate::token::TokenType::{
@@ -24,7 +24,7 @@ use crate::token::TokenType::{
   Plus, Print, Return, RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
 };
 
-use crate::value::Value::{self, Double, ReferenceValue};
+use crate::value::Value::{self, Double, Reference};
 
 const IS_DEBUGGING: bool = true;
 
@@ -144,7 +144,7 @@ struct Upvalue {
 }
 
 struct Program {
-  function_ptr: *mut FunctionObj,
+  function_gc_ptr: *mut GcObject,
   function_kind: FunctionKind,
 
   local_var_opts: Box<[Option<LocalVar>; u8::MAX as usize]>,
@@ -156,7 +156,7 @@ struct Program {
 
 impl Program {
   #[must_use]
-  pub fn new(function_ptr: *mut FunctionObj, function_kind: FunctionKind) -> Self {
+  pub fn new(function_gc_ptr: *mut GcObject, function_kind: FunctionKind) -> Self {
     let size = u8::MAX as usize;
     let mut v = Vec::with_capacity(size);
     v.resize_with(size, || None);
@@ -167,7 +167,14 @@ impl Program {
     v2.resize_with(size, || None);
     let upvalues = v2.try_into().expect("Length must be exactly `u8::MAX`");
 
-    Self { function_ptr, function_kind, local_var_opts, local_var_count: 1, scope_depth: 0, upvalues }
+    Self {
+      function_gc_ptr,
+      function_kind,
+      local_var_opts,
+      local_var_count: 1,
+      scope_depth: 0,
+      upvalues,
+    }
   }
 
   pub const fn begin_scope(&mut self) {
@@ -175,8 +182,7 @@ impl Program {
   }
 
   pub fn chunk(&mut self) -> &mut Chunk {
-    let function = unsafe { &mut *self.function_ptr };
-    function.chunk_mut()
+    self.function().chunk_mut()
   }
 
   pub fn end_scope(&mut self) -> Vec<OpCode> {
@@ -209,6 +215,15 @@ impl Program {
       }
     }
   }
+
+  fn function(&mut self) -> &mut FunctionObj {
+    match unsafe { &mut *self.function_gc_ptr }.object {
+      HeapFunction(fn_ptr) => unsafe { &mut *fn_ptr },
+      _ => {
+        panic!("The program's `function_gc_ptr` is only allowed to be a function!");
+      },
+    }
+  }
 }
 
 struct Compiler<'a, 'b, 'c> {
@@ -227,7 +242,7 @@ impl Compiler<'_, '_, '_> {
   }
 }
 
-pub fn compile(source: &str, gc: &mut Gc) -> Option<*mut FunctionObj> {
+pub fn compile(source: &str, gc: &mut Gc) -> Option<(*mut FunctionObj, *mut GcObject)> {
   let mut parser = Parser::new(source);
   let mut compiler = Compiler::new(&mut parser, gc);
 
@@ -249,17 +264,21 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     Self { parser, programs, gc }
   }
 
-  fn end(&mut self) -> *mut FunctionObj {
+  fn end(&mut self) -> (*mut FunctionObj, *mut GcObject) {
     self.emit_return();
     if IS_DEBUGGING && self.parser.had_error {
-      let function = unsafe { &*self.program().function_ptr };
-      let fn_display = match function {
+      let fn_display = match self.program().function() {
         MainScript { .. } => "<script>".to_string(),
-        UserDefined { name_ptr, .. } => unsafe { &**name_ptr }.to_string(),
+        UserDefined { name_gc_ptr, .. } => {
+          let HeapString(name_ptr) = unsafe { &**name_gc_ptr }.object else {
+            panic!("Not possible for name pointer to be non-string");
+          };
+          unsafe { &*name_ptr }.to_string()
+        },
       };
       disassemble_chunk(self.program().chunk(), &fn_display);
     }
-    self.program().function_ptr
+    (self.program().function(), self.program().function_gc_ptr)
   }
 
   fn emit_byte<T: Into<u8>>(&mut self, byte: T) {
@@ -455,8 +474,8 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
       let start_index = prev_loc.start_index as usize;
       let length = prev_loc.length as usize;
-      let name_ptr = self.gc.copy_string(self.parser.source, start_index, length);
-      UserDefined { arity: 0, chunk: Chunk::default(), name_ptr, upvalue_count: 0 }
+      let (_, name_gc_ptr) = self.gc.copy_string(self.parser.source, start_index, length);
+      UserDefined { arity: 0, chunk: Chunk::default(), name_gc_ptr, upvalue_count: 0 }
     };
 
     self.programs.push(Program::new(self.gc.allocate_function(function_obj), Function));
@@ -466,8 +485,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     self.parser.consume(&LeftParen, "Expect '(' after function name.");
 
     if self.parser.current_token_opt.as_ref().unwrap().typ != RightParen {
-      let function = unsafe { &mut *self.program().function_ptr };
-      let mut arity = function.arity();
+      let mut arity = self.program().function().arity();
 
       loop {
         arity += 1;
@@ -483,24 +501,24 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
         }
       }
 
-      function.set_arity(arity);
+      self.program().function().set_arity(arity);
     }
 
     self.parser.consume(&RightParen, "Expect ')' after parameters.");
     self.parser.consume(&LeftBrace, "Expect '{' before function body.");
     self.parse_block();
 
-    let upvalue_count = unsafe { &*self.program().function_ptr }.upvalue_count() as usize;
+    let upvalue_count = self.program().function().upvalue_count() as usize;
     let pairs: Vec<(u8, bool)> = self.program().upvalues[0..upvalue_count]
       .iter()
       .flatten()
       .map(|Upvalue { index, is_local }| (*index, *is_local))
       .collect();
 
-    let reference = Reference(HeapFunction(self.end()));
+    let (_, closure_gc_ptr) = self.end();
     let _ = self.programs.pop();
 
-    let closure = self.make_constant(ReferenceValue(reference));
+    let closure = self.make_constant(Reference(closure_gc_ptr));
     self.emit_bytes(Closure, closure);
 
     for (index, is_local) in pairs {
@@ -632,8 +650,8 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
     let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
     let str_start = (prev_loc.start_index + 1) as usize;
     let length = (prev_loc.length - 2) as usize;
-    let str_ref = self.gc.copy_string(self.parser.source, str_start, length);
-    self.emit_constant(ReferenceValue(Reference(HeapString(str_ref))));
+    let (_, gc_ptr) = self.gc.copy_string(self.parser.source, str_start, length);
+    self.emit_constant(Reference(gc_ptr));
   }
 
   fn parse_unary(&mut self, _can_assign: bool) {
@@ -765,8 +783,8 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
 
   fn make_ident_constant(&mut self) -> u8 {
     let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
-    let reference = self.gc.copy_string(self.parser.source, loc.start_index as usize, loc.length as usize);
-    self.make_constant(ReferenceValue(Reference(HeapString(reference))))
+    let (_, gc_ptr) = self.gc.copy_string(self.parser.source, loc.start_index as usize, loc.length as usize);
+    self.make_constant(Reference(gc_ptr))
   }
 
   fn make_named_variable(&mut self, can_assign: bool) {
@@ -790,7 +808,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
   }
 
   fn register_upvalue(&mut self, pindex: usize, index: u8, is_local: bool) -> Option<u8> {
-    let upvalue_count = unsafe { &*self.program_at(pindex).function_ptr }.upvalue_count();
+    let upvalue_count = self.program_at(pindex).function().upvalue_count();
     if upvalue_count == u8::MAX {
       self.parser.error("Too many closure variables in function.");
       None
@@ -801,7 +819,7 @@ impl<'a, 'b, 'c> Compiler<'a, 'b, 'c> {
       upvalues.position(|upvalue| &target_uv_opt == upvalue).map(|pos| u8::try_from(pos).unwrap()).or_else(
         || {
           self.program_at(pindex).upvalues[upvalue_index] = target_uv_opt;
-          unsafe { &mut *self.program_at(pindex).function_ptr }.increment_upvalue_count();
+          self.program_at(pindex).function().increment_upvalue_count();
           Some(upvalue_count)
         },
       )

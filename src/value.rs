@@ -2,15 +2,15 @@ use std::ptr::null_mut;
 
 use crate::memory::{free_array, grow_array, next_capacity};
 
+use crate::gc::GcObject;
 use crate::gc::HeapObject::{HeapClosure, HeapFunction, HeapNativeFn, HeapString, HeapUpvalue};
-use crate::gc::Reference;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
   Boolean(bool),
   Double(f64),
   Nil,
-  ReferenceValue(Reference),
+  Reference(*mut GcObject),
 }
 
 impl Value {
@@ -21,12 +21,12 @@ impl Value {
       Self::Boolean(true) => "true".to_string(),
       Self::Boolean(false) => "false".to_string(),
       Self::Nil => "nil".to_string(),
-      Self::ReferenceValue(Reference(heap_object)) => match heap_object {
-        HeapClosure(fn_obj_ptr) => unsafe { &**fn_obj_ptr }.to_string(),
-        HeapFunction(fn_ptr) => unsafe { &**fn_ptr }.to_string(),
-        HeapNativeFn(native_fn_ptr) => unsafe { &**native_fn_ptr }.to_string(),
-        HeapString(str_ptr) => unsafe { &**str_ptr }.to_string(),
-        HeapUpvalue(upvalue_ptr) => unsafe { &**upvalue_ptr }.to_string(),
+      Self::Reference(gc_ptr) => match unsafe { &**gc_ptr }.object {
+        HeapClosure(fn_obj_ptr) => unsafe { &*fn_obj_ptr }.to_string(),
+        HeapFunction(fn_ptr) => unsafe { &*fn_ptr }.to_string(),
+        HeapNativeFn(native_fn_ptr) => unsafe { &*native_fn_ptr }.to_string(),
+        HeapString(str_ptr) => unsafe { &*str_ptr }.to_string(),
+        HeapUpvalue(upvalue_ptr) => unsafe { &*upvalue_ptr }.to_string(),
       },
     }
   }

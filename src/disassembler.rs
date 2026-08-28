@@ -1,6 +1,6 @@
 use crate::chunk::Chunk;
 
-use crate::gc::{HeapObject::HeapFunction, Reference};
+use crate::gc::{GcObject, HeapObject::HeapFunction};
 
 use crate::opcode::OpCode::{
   self, Add, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
@@ -8,7 +8,7 @@ use crate::opcode::OpCode::{
   Return, SetGlobal, SetLocal, SetUpvalue, Subtract, True,
 };
 
-use crate::value::Value::ReferenceValue;
+use crate::value::Value::Reference;
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
   println!("== {name} ==");
@@ -61,7 +61,10 @@ fn closure_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize 
   let value_str = value_obj.stringify();
   println!("{op_code:<16?} {constant_index:>4} {value_str}");
 
-  if let ReferenceValue(Reference(HeapFunction(function_obj_ptr))) = value_obj {
+  if let Reference(gc_ptr) = value_obj
+    && let GcObject { object, .. } = unsafe { &**gc_ptr }
+    && let HeapFunction(function_obj_ptr) = object
+  {
     let upvalue_count = unsafe { &**function_obj_ptr }.upvalue_count();
     for _ in 0..upvalue_count {
       let is_local = unsafe { &*chunk.op_codes.add(wip_offset) };

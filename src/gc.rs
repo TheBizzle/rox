@@ -23,8 +23,8 @@ impl Freeable for GcObject {
   }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Reference(pub HeapObject);
+type GcPtr = *mut GcObject;
+type StrPtr = *mut StringObj;
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,14 +72,24 @@ impl Freeable for HeapObject {
 #[derive(Eq, PartialEq)]
 #[repr(C)]
 pub struct ClosureObj {
-  pub function_obj_ptr: *mut FunctionObj,
-  pub upvalues_ptr_ptr: *mut *mut UpvalueObj,
+  pub function_gc_ptr: *mut GcObject,
+  pub upvalues_ptr_ptr: *mut *mut GcObject,
   pub upvalue_count: u8,
+}
+
+impl ClosureObj {
+  pub fn function(&self) -> &FunctionObj {
+    let HeapFunction(fn_ptr) = unsafe { &*self.function_gc_ptr }.object else {
+      panic!("Illegal for closure's function pointer to be to a non-function");
+    };
+
+    unsafe { &*fn_ptr }
+  }
 }
 
 impl Display for ClosureObj {
   fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
-    unsafe { &*self.function_obj_ptr }.fmt(formatter)
+    self.function().fmt(formatter)
   }
 }
 
@@ -96,7 +106,7 @@ impl Freeable for ClosureObj {
 #[repr(C)]
 pub enum FunctionObj {
   MainScript { arity: u32, chunk: Chunk, upvalue_count: u8 },
-  UserDefined { arity: u32, chunk: Chunk, name_ptr: *const StringObj, upvalue_count: u8 },
+  UserDefined { arity: u32, chunk: Chunk, name_gc_ptr: *const GcObject, upvalue_count: u8 },
 }
 use FunctionObj::{MainScript, UserDefined};
 
@@ -146,8 +156,12 @@ impl Display for FunctionObj {
   fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
     match self {
       MainScript { .. } => write!(formatter, "<script>"),
-      UserDefined { name_ptr, .. } => {
-        let fn_name = unsafe { &**name_ptr }.chars;
+      UserDefined { name_gc_ptr, .. } => {
+        let HeapString(name_ptr) = unsafe { &**name_gc_ptr }.object else {
+          panic!("Not possible for name pointer to be non-string");
+        };
+        let name = unsafe { &*name_ptr };
+        let fn_name = name.chars;
         write!(formatter, "<fn {fn_name:?}>")
       },
     }
@@ -215,7 +229,7 @@ impl Freeable for StringObj {
 #[repr(C)]
 pub struct UpvalueObj {
   pub closed_value: Value,
-  pub next_opt: Option<*mut Self>,
+  pub next_gc_opt: Option<*mut GcObject>,
   pub value_ptr: *mut Value,
 }
 
@@ -231,7 +245,7 @@ impl Freeable for UpvalueObj {
 
 pub struct Gc {
   pub(super) globals: HashTable,
-  pub(super) head_open_upvalue_opt: Option<*mut UpvalueObj>,
+  pub(super) head_open_upvalue_gc_opt: Option<*mut GcObject>,
   objects: *mut GcObject,
   strings: HashTable,
 }
@@ -239,7 +253,7 @@ pub struct Gc {
 impl Gc {
   pub const fn new() -> Self {
     Self {
-      head_open_upvalue_opt: None,
+      head_open_upvalue_gc_opt: None,
       globals: HashTable::new(),
       objects: null_mut(),
       strings: HashTable::new(),
@@ -247,46 +261,50 @@ impl Gc {
   }
 
   #[allow(clippy::cast_ptr_alignment)]
-  pub fn allocate_closure(&mut self, function_obj_ptr: *mut FunctionObj) -> *mut ClosureObj {
+  pub fn allocate_closure(&mut self, function_gc_ptr: *mut GcObject) -> (*mut ClosureObj, GcPtr) {
+    let HeapFunction(function_obj_ptr) = unsafe { &*function_gc_ptr }.object else {
+      panic!("Illegal for closure's function pointer to be to a non-function");
+    };
     let function_obj = unsafe { &*function_obj_ptr };
     let upvalue_count = function_obj.upvalue_count();
     let layout = Layout::array::<*mut UpvalueObj>(upvalue_count as usize).unwrap();
-    let upvalues_ptr_ptr = unsafe { alloc_zeroed(layout).cast::<*mut UpvalueObj>() };
+    let upvalues_ptr_ptr = unsafe { alloc_zeroed(layout).cast::<*mut GcObject>() };
 
-    let closure_obj = ClosureObj { function_obj_ptr, upvalues_ptr_ptr, upvalue_count };
+    let closure_obj = ClosureObj { function_gc_ptr, upvalues_ptr_ptr, upvalue_count };
     self.allocate_on_heap(closure_obj, HeapClosure)
   }
 
-  pub fn allocate_function(&mut self, function_obj: FunctionObj) -> *mut FunctionObj {
-    self.allocate_on_heap(function_obj, HeapFunction)
+  pub fn allocate_function(&mut self, function_obj: FunctionObj) -> GcPtr {
+    self.allocate_on_heap(function_obj, HeapFunction).1
   }
 
-  pub fn allocate_native_fn(&mut self, native_fn_obj: NativeFnObj) -> *mut NativeFnObj {
-    self.allocate_on_heap(native_fn_obj, HeapNativeFn)
+  pub fn allocate_native_fn(&mut self, native_fn_obj: NativeFnObj) -> GcPtr {
+    self.allocate_on_heap(native_fn_obj, HeapNativeFn).1
   }
 
-  fn allocate_string(&mut self, chars: *const u8, length: usize, hash: u32) -> *mut StringObj {
+  fn allocate_string(&mut self, chars: *const u8, length: usize, hash: u32) -> (StrPtr, GcPtr) {
     let string_obj = StringObj { chars, length, hash };
-    let string_ptr = self.allocate_on_heap(string_obj, HeapString);
-    self.strings.set(string_ptr, Nil);
-    string_ptr
+    let (string_ptr, gc_ptr) = self.allocate_on_heap(string_obj, HeapString);
+    self.strings.set(gc_ptr, Nil);
+    (string_ptr, gc_ptr)
   }
 
-  pub fn allocate_upvalue(&mut self, upvalue_obj: UpvalueObj) -> *mut UpvalueObj {
+  pub fn allocate_upvalue(&mut self, upvalue_obj: UpvalueObj) -> (*mut UpvalueObj, GcPtr) {
     self.allocate_on_heap(upvalue_obj, HeapUpvalue)
   }
 
-  fn allocate_on_heap<T, F: Fn(*mut T) -> HeapObject>(&mut self, obj: T, constructor: F) -> *mut T {
+  fn allocate_on_heap<T, F: Fn(*mut T) -> HeapObject>(&mut self, obj: T, constructor: F) -> (*mut T, GcPtr) {
     let ptr = Box::into_raw(Box::new(obj));
     let object = constructor(ptr);
     let gc_object = Box::new(GcObject { next: self.objects, object });
     let gc_ptr = Box::into_raw(gc_object);
     self.objects = gc_ptr;
-    ptr
+    (ptr, gc_ptr)
   }
 
   pub fn close_upvalues(&mut self, prev_value_ptr: *mut Value) {
-    while let Some(upvalue_ptr) = self.head_open_upvalue_opt
+    while let Some(upvalue_gc_ptr) = self.head_open_upvalue_gc_opt
+      && let HeapUpvalue(upvalue_ptr) = unsafe { &*upvalue_gc_ptr }.object
       && let upvalue = unsafe { &mut *upvalue_ptr }
       && upvalue.value_ptr >= prev_value_ptr
     {
@@ -294,11 +312,11 @@ impl Gc {
         upvalue.closed_value = (*upvalue.value_ptr).clone();
         upvalue.value_ptr = &raw mut upvalue.closed_value;
       }
-      self.head_open_upvalue_opt = upvalue.next_opt;
+      self.head_open_upvalue_gc_opt = upvalue.next_gc_opt;
     }
   }
 
-  pub fn concatenate_strings(&mut self, string1: *const StringObj, string2: *const StringObj) -> Reference {
+  pub fn concatenate_strings(&mut self, string1: StrPtr, string2: StrPtr) -> (StrPtr, GcPtr) {
     let str1 = unsafe { &*string1 };
     let str2 = unsafe { &*string2 };
 
@@ -317,21 +335,19 @@ impl Gc {
       copy_nonoverlapping(str2.chars, ptr.add(length1), length2);
     }
 
-    // TODO: Start `take_string`
     let hash = hash_string(ptr, length);
     #[allow(clippy::option_if_let_else)]
-    if let Some(interned) = self.strings.find_string(ptr, length, hash) {
+    if let Some(ptr_pair) = self.find_string(ptr, length, hash) {
       unsafe {
         free_array!(u8, ptr, length);
       }
-      Reference(HeapString(interned.cast_mut()))
+      ptr_pair
     } else {
-      Reference(HeapString(self.allocate_string(ptr, length, hash)))
+      self.allocate_string(ptr, length, hash)
     }
-    // End `take_string`
   }
 
-  pub fn copy_string(&mut self, str: &str, start_index: usize, length: usize) -> *mut StringObj {
+  pub fn copy_string(&mut self, str: &str, start_index: usize, length: usize) -> (StrPtr, GcPtr) {
     let layout = Layout::array::<u8>(length).unwrap();
     let ptr = unsafe { alloc(layout) };
     if ptr.is_null() {
@@ -346,8 +362,8 @@ impl Gc {
 
     let hash = hash_string(ptr, length);
     #[allow(clippy::option_if_let_else)]
-    if let Some(interned) = self.strings.find_string(ptr, length, hash) {
-      interned.cast_mut()
+    if let Some(ptr_pair) = self.find_string(ptr, length, hash) {
+      ptr_pair
     } else {
       self.allocate_string(ptr, length, hash)
     }
@@ -368,6 +384,16 @@ impl Gc {
     self.globals.free();
     self.strings.free();
   }
+
+  fn find_string(&self, chars_ptr: *const u8, length: usize, hash: u32) -> Option<(StrPtr, GcPtr)> {
+    self.strings.find_string(chars_ptr, length, hash).map(|interned_gc_ptr| {
+      if let HeapString(str_ptr) = unsafe { &*interned_gc_ptr }.object {
+        (str_ptr, interned_gc_ptr.cast_mut())
+      } else {
+        panic!("The only objects that tables can use as keys are strings")
+      }
+    })
+  }
 }
 
 fn _free_chars(chars: *const u8, length: u32) {
@@ -377,8 +403,8 @@ fn _free_chars(chars: *const u8, length: u32) {
   }
 }
 
-pub fn refs_are_equal(a: &Reference, b: &Reference) -> bool {
-  match (&a.0, &b.0) {
+pub fn objs_are_equal(a: &HeapObject, b: &HeapObject) -> bool {
+  match (&a, &b) {
     (HeapString(ptr1), HeapString(ptr2)) => ptr1 == ptr2,
     (_, _) => false,
   }
