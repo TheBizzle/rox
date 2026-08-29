@@ -3,9 +3,9 @@ use crate::chunk::Chunk;
 use crate::gc::{GcObject, HeapObject::HeapFunction};
 
 use crate::opcode::OpCode::{
-  self, Add, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
-  GetLocal, GetUpvalue, Greater, Jump, JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop, Print,
-  Return, SetGlobal, SetLocal, SetUpvalue, Subtract, True,
+  self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
+  GetLocal, GetProperty, GetUpvalue, Greater, Jump, JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop,
+  Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract, True,
 };
 
 use crate::value::Value::Reference;
@@ -31,7 +31,9 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
 
   let ordinal = unsafe { *chunk.op_codes.add(offset) };
   match OpCode::from_repr(ordinal) {
-    Some(x @ (Constant | DefineGlobal | GetGlobal | SetGlobal)) => constant_instruction(&x, chunk, offset),
+    Some(x @ (Class | Constant | DefineGlobal | GetGlobal | GetProperty | SetGlobal | SetProperty)) => {
+      constant_instruction(&x, chunk, offset)
+    },
     Some(
       x @ (Add | CloseUpvalue | Divide | Equal | False | Greater | Less | Multiply | Negate | Nil | Not
       | Print | Pop | Return | Subtract | True),

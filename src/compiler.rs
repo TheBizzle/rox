@@ -5,10 +5,10 @@ use crate::chunk::Chunk;
 use crate::disassembler::disassemble_chunk;
 
 use crate::opcode::OpCode::{
-  self, Add, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal as EqualCode, False as FalseCode,
-  FnCall, GetGlobal, GetLocal, GetUpvalue, Greater as GreaterCode, Jump, JumpIfFalse, Less as LessCode, Loop,
-  Multiply, Negate, Nil as NilCode, Not, Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal,
-  SetUpvalue, Subtract, True as TrueCode,
+  self, Add, Class as ClassCode, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal as EqualCode,
+  False as FalseCode, FnCall, GetGlobal, GetLocal, GetProperty, GetUpvalue, Greater as GreaterCode, Jump,
+  JumpIfFalse, Less as LessCode, Loop, Multiply, Negate, Nil as NilCode, Not, Pop, Print as PrintCode,
+  Return as ReturnCode, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract, True as TrueCode,
 };
 
 use crate::parser::Parser;
@@ -19,7 +19,7 @@ use crate::gc::{Gc, GcObject};
 
 use crate::token::Token;
 use crate::token::TokenType::{
-  self, And, Bang, BangEqual, Class, Comma, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
+  self, And, Bang, BangEqual, Class, Comma, Dot, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
   GreaterEqual, Identifier, If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Or,
   Plus, Print, Return, RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
 };
@@ -62,6 +62,8 @@ struct ParseRule {
 
 fn rule_for(typ: &TokenType) -> ParseRule {
   let (prefix, infix, precedence): (Option<ParseFn>, Option<ParseFn>, Precedence) = match typ {
+    Dot => (None, Some(Compiler::parse_dot), Precedence::Call),
+
     LeftParen => (Some(Compiler::parse_grouping), Some(Compiler::parse_function_call), Precedence::Call),
 
     Slash | Star => (None, Some(Compiler::parse_binary), Precedence::Factor),
@@ -405,8 +407,32 @@ impl Compiler {
     self.parser.consume(&RightBrace, "Expect '}' after block.");
   }
 
+  fn parse_class_decl(&mut self) {
+    let name = self
+      .parser
+      .consume_dyn(
+        |x| match x {
+          Identifier(y) => Some(y.clone()),
+          _ => None,
+        },
+        "Expect class name.",
+      )
+      .unwrap();
+
+    let name_byte = self.make_ident_constant();
+    self.declare_variable(name);
+
+    self.emit_bytes(ClassCode, name_byte);
+    self.define_variable(name_byte);
+
+    self.parser.consume(&LeftBrace, "Expect '{' before class body.");
+    self.parser.consume(&RightBrace, "Expect '}' after class body.");
+  }
+
   fn parse_declaration(&mut self) {
-    if self.token_is_a(&Fun) {
+    if self.token_is_a(&Class) {
+      self.parse_class_decl();
+    } else if self.token_is_a(&Fun) {
       self.parse_function_decl();
     } else if self.token_is_a(&Var) {
       self.parse_var_decl();
@@ -416,6 +442,28 @@ impl Compiler {
 
     if self.parser.is_panicking {
       self.synchronize();
+    }
+  }
+
+  fn parse_dot(&mut self, can_assign: bool) {
+    self
+      .parser
+      .consume_dyn(
+        |x| match x {
+          Identifier(y) => Some(y.clone()),
+          _ => None,
+        },
+        "Expect property name after '.'.",
+      )
+      .unwrap();
+
+    let name_byte = self.make_ident_constant();
+
+    if can_assign && self.token_is_a(&Equal) {
+      self.parse_expression();
+      self.emit_bytes(SetProperty, name_byte);
+    } else {
+      self.emit_bytes(GetProperty, name_byte);
     }
   }
 

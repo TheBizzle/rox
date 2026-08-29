@@ -31,6 +31,11 @@ impl GcObject {
     }
 
     match self.object {
+      HeapClass(obj_ptr) => {
+        let class_obj = unsafe { &mut *obj_ptr };
+        vec![Blackenable::Object(class_obj.name_gc_mut())]
+      },
+
       HeapClosure(obj_ptr) => {
         let closure = unsafe { &*obj_ptr };
         let function_gc = unsafe { &mut *closure.function_gc_ptr };
@@ -56,6 +61,12 @@ impl GcObject {
             vec![Blackenable::Array(&chunk.constants), Blackenable::Object(gc_obj_ref)]
           },
         }
+      },
+
+      HeapObjInstance(obj_ptr) => {
+        let class_gc = unsafe { &mut *obj_ptr }.class_gc_mut();
+        let fields_ref = &mut (unsafe { &mut *obj_ptr }.fields);
+        vec![Blackenable::Object(class_gc), Blackenable::Table(fields_ref)]
       },
 
       HeapUpvalue(obj_ptr) => {
@@ -90,23 +101,33 @@ type StrPtr = *mut StringObj;
 enum Blackenable {
   Array(&'static ValueArray),
   Object(&'static mut GcObject),
+  Table(&'static mut HashTable),
   Value(&'static Value),
 }
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HeapObject {
+  HeapClass(*mut ClassObj),
   HeapClosure(*mut ClosureObj),
   HeapFunction(*mut FunctionObj),
   HeapNativeFn(*mut NativeFnObj),
+  HeapObjInstance(*mut ObjInstanceObj),
   HeapString(*mut StringObj),
   HeapUpvalue(*mut UpvalueObj),
 }
-use HeapObject::{HeapClosure, HeapFunction, HeapNativeFn, HeapString, HeapUpvalue};
+use HeapObject::{
+  HeapClass, HeapClosure, HeapFunction, HeapNativeFn, HeapObjInstance, HeapString, HeapUpvalue,
+};
 
 impl Freeable for HeapObject {
   fn free(&mut self) {
     match &self {
+      HeapClass(class_ptr) => {
+        unsafe { &mut **class_ptr }.free();
+        let layout = Layout::new::<ClassObj>();
+        unsafe { dealloc(class_ptr.cast::<u8>(), layout) };
+      },
       HeapClosure(function_obj_ptr) => {
         unsafe { &mut **function_obj_ptr }.free();
         let layout = Layout::new::<ClosureObj>();
@@ -121,6 +142,11 @@ impl Freeable for HeapObject {
         unsafe { &mut **native_fn_ptr }.free();
         let layout = Layout::new::<NativeFnObj>();
         unsafe { dealloc(native_fn_ptr.cast::<u8>(), layout) };
+      },
+      HeapObjInstance(obj_instance_ptr) => {
+        unsafe { &mut **obj_instance_ptr }.free();
+        let layout = Layout::new::<FunctionObj>();
+        unsafe { dealloc(obj_instance_ptr.cast::<u8>(), layout) };
       },
       HeapString(string_ptr) => {
         unsafe { &mut **string_ptr }.free();
@@ -138,9 +164,45 @@ impl Freeable for HeapObject {
 
 #[derive(Eq, PartialEq)]
 #[repr(C)]
+pub struct ClassObj {
+  pub name_gc_ptr: *mut GcObject, // *StringObj
+}
+
+impl ClassObj {
+  pub fn name(&self) -> &StringObj {
+    let HeapString(name_obj_ptr) = self.name_gc().object else {
+      panic!("Class name cannot be non-string");
+    };
+    unsafe { &mut *name_obj_ptr }
+  }
+
+  pub fn name_gc(&self) -> &GcObject {
+    unsafe { &*self.name_gc_ptr }
+  }
+
+  pub fn name_gc_mut(&mut self) -> &mut GcObject {
+    unsafe { &mut *self.name_gc_ptr }
+  }
+}
+
+impl Display for ClassObj {
+  fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
+    write!(formatter, "{}", self.name())
+  }
+}
+
+impl Freeable for ClassObj {
+  fn free(&mut self) {
+    let name_heap_obj = &mut unsafe { &mut *self.name_gc_ptr }.object;
+    name_heap_obj.free();
+  }
+}
+
+#[derive(Eq, PartialEq)]
+#[repr(C)]
 pub struct ClosureObj {
-  pub function_gc_ptr: *mut GcObject,
-  pub upvalues_ptr_ptr: *mut *mut GcObject,
+  pub function_gc_ptr: *mut GcObject,       // *FunctionObj
+  pub upvalues_ptr_ptr: *mut *mut GcObject, // **UpvalueObj
   pub upvalue_count: u8,
 }
 
@@ -270,6 +332,50 @@ impl PartialEq for NativeFnObj {
   }
 }
 
+#[repr(C)]
+pub struct ObjInstanceObj {
+  class_gc_ptr: *mut GcObject,
+  pub fields: HashTable,
+}
+
+impl ObjInstanceObj {
+  pub const fn new(class_gc_ptr: *mut GcObject) -> Self {
+    Self { class_gc_ptr, fields: HashTable::new() }
+  }
+
+  fn class_gc_mut(&mut self) -> &mut GcObject {
+    unsafe { &mut *self.class_gc_ptr }
+  }
+
+  fn class(&self) -> &ClassObj {
+    unsafe { &*self.class_obj_ptr() }
+  }
+
+  fn class_mut(&mut self) -> &mut ClassObj {
+    unsafe { &mut *self.class_obj_ptr() }
+  }
+
+  fn class_obj_ptr(&self) -> *mut ClassObj {
+    let HeapClass(class_obj_ptr) = unsafe { &*self.class_gc_ptr }.object else {
+      panic!("Instance's class must be a class");
+    };
+    class_obj_ptr
+  }
+}
+
+impl Display for ObjInstanceObj {
+  fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
+    write!(formatter, "{} instance", self.class().name())
+  }
+}
+
+impl Freeable for ObjInstanceObj {
+  fn free(&mut self) {
+    self.fields.free();
+    self.class_mut().free();
+  }
+}
+
 #[derive(Eq, PartialEq)]
 #[repr(C)]
 pub struct StringObj {
@@ -348,6 +454,10 @@ impl Gc {
     }
   }
 
+  pub fn allocate_class(&mut self, class_obj: ClassObj) -> GcPtr {
+    self.allocate_on_heap(class_obj, HeapClass).1
+  }
+
   #[allow(clippy::cast_ptr_alignment)]
   pub fn allocate_closure(&mut self, function_gc_ptr: *mut GcObject) -> (*mut ClosureObj, GcPtr) {
     let HeapFunction(function_obj_ptr) = unsafe { &*function_gc_ptr }.object else {
@@ -368,6 +478,10 @@ impl Gc {
 
   pub fn allocate_native_fn(&mut self, native_fn_obj: NativeFnObj) -> GcPtr {
     self.allocate_on_heap(native_fn_obj, HeapNativeFn).1
+  }
+
+  pub fn allocate_obj_instance(&mut self, obj_instance_obj: ObjInstanceObj) -> GcPtr {
+    self.allocate_on_heap(obj_instance_obj, HeapObjInstance).1
   }
 
   fn allocate_string(&mut self, chars: *const u8, length: usize, hash: u32) -> (StrPtr, GcPtr) {
@@ -487,17 +601,21 @@ impl Gc {
     }
   }
 
-  pub fn mark_tables(&mut self) {
-    let mut pairs = Vec::new();
-
-    for (k, v) in self.globals.iter_mut() {
-      pairs.push((ptr::from_mut(k), ptr::from_mut(v)));
-    }
-
+  fn mark_table_pairs(&mut self, pairs: Vec<(*mut GcObject, *mut Value)>) {
     for (key_ptr, value_ptr) in pairs {
       self.mark_object(unsafe { &mut *key_ptr });
       self.mark_value(unsafe { &*value_ptr });
     }
+  }
+
+  fn mark_table(&mut self, table: &mut HashTable) {
+    let pairs = table.iter_mut().map(|(k, v)| (ptr::from_mut(k), ptr::from_mut(v))).collect();
+    self.mark_table_pairs(pairs);
+  }
+
+  pub fn mark_tables(&mut self) {
+    let pairs = self.globals.iter_mut().map(|(k, v)| (ptr::from_mut(k), ptr::from_mut(v))).collect();
+    self.mark_table_pairs(pairs);
   }
 
   pub fn mark_value(&mut self, value: &Value) {
@@ -542,6 +660,9 @@ impl Gc {
           },
           Blackenable::Object(obj) => {
             self.mark_object(obj);
+          },
+          Blackenable::Table(table) => {
+            self.mark_table(table);
           },
           Blackenable::Value(value) => {
             self.mark_value(value);

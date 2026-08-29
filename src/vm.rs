@@ -14,15 +14,18 @@ use crate::compiler::{
 use crate::disassembler::disassemble_instruction;
 
 use crate::gc::FunctionObj::{MainScript, UserDefined};
-use crate::gc::HeapObject::{HeapClosure, HeapFunction, HeapNativeFn, HeapString, HeapUpvalue};
+use crate::gc::HeapObject::{
+  HeapClass, HeapClosure, HeapFunction, HeapNativeFn, HeapObjInstance, HeapString, HeapUpvalue,
+};
 use crate::gc::{
-  ClosureObj, DEBUG_LOG_GC, DEBUG_STRESS_GC, Gc, GcObject, NativeFnObj, UpvalueObj, objs_are_equal,
+  ClassObj, ClosureObj, DEBUG_LOG_GC, DEBUG_STRESS_GC, Gc, GcObject, NativeFnObj, ObjInstanceObj, UpvalueObj,
+  objs_are_equal,
 };
 
 use crate::opcode::OpCode::{
-  self, Add, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
-  GetLocal, GetUpvalue, Greater, Jump, JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop, Print,
-  Return, SetGlobal, SetLocal, SetUpvalue, Subtract, True,
+  self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
+  GetLocal, GetProperty, GetUpvalue, Greater, Jump, JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop,
+  Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract, True,
 };
 
 use crate::memory::Freeable;
@@ -284,6 +287,11 @@ impl VM {
           }
         },
 
+        Some(Class) => {
+          let (_, name_gc_ptr) = read_string!();
+          let x = self.compiler.gc.allocate_class(ClassObj { name_gc_ptr });
+          push_and_win!(Reference(x))
+        },
         Some(CloseUpvalue) => {
           self.compiler.gc.close_upvalues(unsafe { self.stack_top.sub(1) });
           self.pop();
@@ -363,6 +371,25 @@ impl VM {
           let slots_ptr = self.frames[self.current_frame_index].slots_ptr;
           let value = unsafe { &*slots_ptr.add(slot_num as usize) }.clone();
           push_and_win!(value)
+        },
+        Some(GetProperty) => {
+          if let Reference(instance_gc_ptr) = self.peek(0)
+            && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
+          {
+            let instance_obj = unsafe { &*instance_obj_ptr };
+
+            let (str_obj_ptr, _) = read_string!();
+
+            if let Some(property_value) = instance_obj.fields.get(str_obj_ptr) {
+              self.pop();
+              push_and_win!(unsafe { &*property_value }.clone())
+            } else {
+              let name_str = unsafe { &*str_obj_ptr };
+              runtime_error!("Undefined property '{name_str}'.")
+            }
+          } else {
+            runtime_error!("Only instances have properties.")
+          }
         },
         Some(GetUpvalue) => {
           let slot = read_u8!() as usize;
@@ -459,6 +486,21 @@ impl VM {
           unsafe { *slots_ptr.add(slot_num as usize) = value };
           Continue
         },
+        Some(SetProperty) => {
+          if let Reference(instance_gc_ptr) = self.peek(1)
+            && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
+          {
+            let instance_obj = unsafe { &mut *instance_obj_ptr };
+            let (_, f_name_gc_ptr) = read_string!();
+            instance_obj.fields.set(f_name_gc_ptr, self.peek(0));
+
+            let value = self.pop();
+            let _ = self.pop();
+            push_and_win!(value)
+          } else {
+            runtime_error!("Only instances have fields.")
+          }
+        },
         Some(SetUpvalue) => {
           let slot = read_u8!() as usize;
           let closure = &mut self.frames[self.current_frame_index].closure();
@@ -532,6 +574,14 @@ impl VM {
 
   fn call_value_for_error(&mut self, callee: &Value, arg_count: u8) -> Option<ProgressState> {
     if let Reference(gc_ptr) = callee
+      && let HeapClass(class_obj_ptr) = unsafe { &**gc_ptr }.object
+      && !class_obj_ptr.is_null()
+    {
+      let obj_instance_obj = ObjInstanceObj::new(*gc_ptr);
+      let obj_instance_gc_ptr = self.compiler.gc.allocate_obj_instance(obj_instance_obj);
+      unsafe { *self.stack_top.sub((arg_count + 1) as usize) = Reference(obj_instance_gc_ptr) };
+      None
+    } else if let Reference(gc_ptr) = callee
       && let HeapClosure(closure_obj_ptr) = unsafe { &**gc_ptr }.object
       && !closure_obj_ptr.is_null()
     {
