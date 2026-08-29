@@ -251,6 +251,13 @@ impl Default for Compiler {
 }
 
 impl Compiler {
+  pub fn mark_roots(&mut self) {
+    for program in self.programs.iter().rev() {
+      let function_gc = unsafe { &mut *program.function_gc_ptr };
+      self.gc.mark_object(function_gc);
+    }
+  }
+
   pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {
     self.parser = Parser::new(source);
 

@@ -1,6 +1,6 @@
 use std::alloc::{Layout, alloc, handle_alloc_error};
 use std::ptr::{addr_of, null_mut};
-use std::slice::from_raw_parts;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 use crate::gc::{GcObject, HeapObject::HeapString, StringObj};
 
@@ -149,6 +149,19 @@ impl HashTable {
         Entry { value, .. } => Some(unsafe { addr_of!(*value) }),
       }
     }
+  }
+
+  pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut GcObject, &mut Value)> {
+    let cells = if self.cells_ptr.is_null() {
+      [].iter_mut()
+    } else {
+      unsafe { from_raw_parts_mut(self.cells_ptr, self.capacity) }.iter_mut()
+    };
+
+    cells.filter_map(|cell| match cell {
+      Cell::Entry { key, value } => Some((unsafe { &mut *(*key).cast_mut() }, value)),
+      _ => None,
+    })
   }
 
   pub fn set(&mut self, key: *const GcObject, value: Value) -> bool {

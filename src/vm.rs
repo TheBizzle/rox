@@ -15,13 +15,17 @@ use crate::disassembler::disassemble_instruction;
 
 use crate::gc::FunctionObj::{MainScript, UserDefined};
 use crate::gc::HeapObject::{HeapClosure, HeapFunction, HeapNativeFn, HeapString, HeapUpvalue};
-use crate::gc::{ClosureObj, Gc, GcObject, NativeFnObj, UpvalueObj, objs_are_equal};
+use crate::gc::{
+  ClosureObj, DEBUG_LOG_GC, DEBUG_STRESS_GC, Gc, GcObject, NativeFnObj, UpvalueObj, objs_are_equal,
+};
 
 use crate::opcode::OpCode::{
   self, Add, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
   GetLocal, GetUpvalue, Greater, Jump, JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop, Print,
   Return, SetGlobal, SetLocal, SetUpvalue, Subtract, True,
 };
+
+use crate::memory::Freeable;
 
 use crate::value::Value::{self, Boolean, Double, Nil as NilValue, Reference};
 
@@ -68,6 +72,7 @@ pub struct VM {
   compiler: Compiler,
   current_frame_index: usize,
   frames: [CallFrame; FRAMES_MAX],
+  instrs_since_last_gc: u16,
   _stack: Box<[Value; STACK_MAX]>,
   stack_addr: *mut Value,
   stack_top: *mut Value,
@@ -93,6 +98,7 @@ impl VM {
       compiler: Compiler::default(),
       current_frame_index: 0,
       frames,
+      instrs_since_last_gc: 0,
       _stack: Box::new(stack),
       stack_addr,
       stack_top,
@@ -106,6 +112,20 @@ impl VM {
     );
 
     this
+  }
+
+  pub fn collect_garbage(&mut self) {
+    if DEBUG_LOG_GC {
+      println!("-- gc begin");
+    }
+
+    self.mark_roots();
+    self.compiler.gc.trace_references();
+    self.compiler.gc.sweep();
+
+    if DEBUG_LOG_GC {
+      println!("-- gc end");
+    }
   }
 
   #[must_use]
@@ -460,6 +480,15 @@ impl VM {
         },
       };
 
+      if DEBUG_STRESS_GC {
+        self.collect_garbage();
+      } else if self.instrs_since_last_gc >= 999 {
+        self.collect_garbage();
+        self.instrs_since_last_gc = 0;
+      } else {
+        self.instrs_since_last_gc += 1;
+      }
+
       match progress_state {
         Error => {
           return RuntimeError;
@@ -598,6 +627,33 @@ impl VM {
     }
 
     self.reset_stack();
+  }
+
+  fn mark_roots(&mut self) {
+    let size = unsafe { self.stack_top.offset_from(self.stack_addr).cast_unsigned() };
+    let stack_slice = unsafe { slice::from_raw_parts(self.stack_addr, size) };
+
+    for value in stack_slice {
+      self.compiler.gc.mark_value(value);
+    }
+
+    for frame in &self.frames[0..=self.current_frame_index] {
+      let gc_closure = unsafe { &mut *frame.closure_gc_ptr };
+      self.compiler.gc.mark_object(gc_closure);
+    }
+
+    let mut upvalue_opt = self.compiler.gc.head_open_upvalue_gc_opt;
+    while let Some(upvalue_gc_ptr) = upvalue_opt
+      && let upvalue_gc = unsafe { &mut *upvalue_gc_ptr }
+      && let HeapUpvalue(upvalue_ptr) = upvalue_gc.object
+    {
+      let upvalue = unsafe { &*upvalue_ptr };
+      self.compiler.gc.mark_object(upvalue_gc);
+      upvalue_opt = upvalue.next_gc_opt;
+    }
+
+    self.compiler.gc.mark_tables();
+    self.compiler.mark_roots();
   }
 }
 

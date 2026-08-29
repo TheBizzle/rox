@@ -1,4 +1,5 @@
 use std::ptr::null_mut;
+use std::slice::from_raw_parts_mut;
 
 use crate::memory::{free_array, grow_array, next_capacity};
 
@@ -56,6 +57,14 @@ impl ValueArray {
     self.values = null_mut();
 
     self
+  }
+
+  pub fn iter(&self) -> impl Iterator<Item = &Value> {
+    if self.values.is_null() {
+      [].iter()
+    } else {
+      unsafe { from_raw_parts_mut(self.values, self.count as usize) }.iter()
+    }
   }
 
   pub fn write(&mut self, value: Value) {

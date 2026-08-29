@@ -1,7 +1,8 @@
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc, handle_alloc_error};
-use std::fmt::{Display, Formatter, Result};
-use std::ptr::{copy_nonoverlapping, null_mut};
-use std::slice::from_raw_parts;
+use std::any::type_name;
+use std::fmt::{Debug, Display, Formatter, Result};
+use std::ptr::{self, copy_nonoverlapping, null_mut};
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 use crate::chunk::Chunk;
 
@@ -9,22 +10,88 @@ use crate::hash_table::HashTable;
 
 use crate::memory::{Freeable, free_array};
 
-use crate::value::Value::{self, Nil};
+use crate::value::Value::{self, Nil, Reference};
+use crate::value::ValueArray;
 
+pub const DEBUG_STRESS_GC: bool = false;
+pub const DEBUG_LOG_GC: bool = true;
+
+#[derive(Debug)]
 #[repr(C)]
 pub struct GcObject {
   pub next: *mut Self,
   pub object: HeapObject,
+  is_marked: bool,
+}
+
+impl GcObject {
+  fn blackenables(&self) -> Vec<Blackenable> {
+    if DEBUG_LOG_GC {
+      println!("{self:?} blacken {:?}", self.object);
+    }
+
+    match self.object {
+      HeapClosure(obj_ptr) => {
+        let closure = unsafe { &*obj_ptr };
+        let function_gc = unsafe { &mut *closure.function_gc_ptr };
+
+        let mut out = Vec::with_capacity(1 + closure.upvalue_count as usize);
+        out.push(Blackenable::Object(&mut *function_gc));
+
+        let uvps = unsafe { from_raw_parts_mut(closure.upvalues_ptr_ptr, closure.upvalue_count as usize) };
+
+        for upvalue_ptr in uvps {
+          out.push(Blackenable::Object(unsafe { &mut **upvalue_ptr }));
+        }
+
+        out
+      },
+
+      HeapFunction(obj_ptr) => {
+        let function = unsafe { &*obj_ptr };
+        match function {
+          MainScript { chunk, .. } => vec![Blackenable::Array(&chunk.constants)],
+          UserDefined { chunk, name_gc_ptr, .. } => {
+            let gc_obj_ref = unsafe { &mut **name_gc_ptr };
+            vec![Blackenable::Array(&chunk.constants), Blackenable::Object(gc_obj_ref)]
+          },
+        }
+      },
+
+      HeapUpvalue(obj_ptr) => {
+        let closed_value_ref = &(unsafe { &*obj_ptr }.closed_value);
+        vec![Blackenable::Value(closed_value_ref)]
+      },
+
+      HeapNativeFn(_) | HeapString(_) => Vec::new(),
+    }
+  }
+
+  fn set_marked(&mut self) {
+    if DEBUG_LOG_GC {
+      println!("Now marked: {self:?}");
+    }
+    self.is_marked = true;
+  }
 }
 
 impl Freeable for GcObject {
   fn free(&mut self) {
+    if DEBUG_LOG_GC {
+      println!("{self:?} free type {}", type_name::<Self>());
+    }
     self.object.free();
   }
 }
 
 type GcPtr = *mut GcObject;
 type StrPtr = *mut StringObj;
+
+enum Blackenable {
+  Array(&'static ValueArray),
+  Object(&'static mut GcObject),
+  Value(&'static Value),
+}
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,7 +173,7 @@ impl Freeable for ClosureObj {
 #[repr(C)]
 pub enum FunctionObj {
   MainScript { arity: u32, chunk: Chunk, upvalue_count: u8 },
-  UserDefined { arity: u32, chunk: Chunk, name_gc_ptr: *const GcObject, upvalue_count: u8 },
+  UserDefined { arity: u32, chunk: Chunk, name_gc_ptr: *mut GcObject, upvalue_count: u8 },
 }
 use FunctionObj::{MainScript, UserDefined};
 
@@ -245,16 +312,37 @@ impl Freeable for UpvalueObj {
 
 pub struct Gc {
   pub(super) globals: HashTable,
+  grays: Vec<*const GcObject>,
   pub(super) head_open_upvalue_gc_opt: Option<*mut GcObject>,
   objects: *mut GcObject,
   strings: HashTable,
 }
 
+impl Freeable for Gc {
+  fn free(&mut self) {
+    let mut ptr = self.objects;
+    while !ptr.is_null() {
+      let next = unsafe { (*ptr).next };
+      unsafe {
+        (*ptr).free();
+        drop(Box::from_raw(ptr));
+      }
+      ptr = next;
+    }
+    self.objects = null_mut();
+
+    self.globals.free();
+    self.grays.clear();
+    self.strings.free();
+  }
+}
+
 impl Gc {
   pub const fn new() -> Self {
     Self {
-      head_open_upvalue_gc_opt: None,
       globals: HashTable::new(),
+      grays: Vec::new(),
+      head_open_upvalue_gc_opt: None,
       objects: null_mut(),
       strings: HashTable::new(),
     }
@@ -295,9 +383,16 @@ impl Gc {
 
   fn allocate_on_heap<T, F: Fn(*mut T) -> HeapObject>(&mut self, obj: T, constructor: F) -> (*mut T, GcPtr) {
     let ptr = Box::into_raw(Box::new(obj));
+
+    if DEBUG_LOG_GC {
+      let object = constructor(ptr);
+      let gc_object = GcObject { next: self.objects, object: object.clone(), is_marked: false };
+      println!("{object:?} allocate {} for {:?}", std::mem::size_of_val(&gc_object), type_name::<T>());
+    }
+
     let object = constructor(ptr);
-    let gc_object = Box::new(GcObject { next: self.objects, object });
-    let gc_ptr = Box::into_raw(gc_object);
+    let gc_object = GcObject { next: self.objects, object, is_marked: false };
+    let gc_ptr = Box::into_raw(Box::new(gc_object));
     self.objects = gc_ptr;
     (ptr, gc_ptr)
   }
@@ -369,22 +464,6 @@ impl Gc {
     }
   }
 
-  pub fn free(&mut self) {
-    let mut ptr = self.objects;
-    while !ptr.is_null() {
-      let next = unsafe { (*ptr).next };
-      unsafe {
-        (*ptr).free();
-        drop(Box::from_raw(ptr));
-      }
-      ptr = next;
-    }
-    self.objects = null_mut();
-
-    self.globals.free();
-    self.strings.free();
-  }
-
   fn find_string(&self, chars_ptr: *const u8, length: usize, hash: u32) -> Option<(StrPtr, GcPtr)> {
     self.strings.find_string(chars_ptr, length, hash).map(|interned_gc_ptr| {
       if let HeapString(str_ptr) = unsafe { &*interned_gc_ptr }.object {
@@ -393,6 +472,83 @@ impl Gc {
         panic!("The only objects that tables can use as keys are strings")
       }
     })
+  }
+
+  pub fn mark_array(&mut self, values: &ValueArray) {
+    for value in values.iter() {
+      self.mark_value(value);
+    }
+  }
+
+  pub fn mark_object(&mut self, gc_object: &mut GcObject) {
+    if !gc_object.is_marked {
+      gc_object.set_marked();
+      self.grays.push(ptr::from_ref(gc_object));
+    }
+  }
+
+  pub fn mark_tables(&mut self) {
+    let mut pairs = Vec::new();
+
+    for (k, v) in self.globals.iter_mut() {
+      pairs.push((ptr::from_mut(k), ptr::from_mut(v)));
+    }
+
+    for (key_ptr, value_ptr) in pairs {
+      self.mark_object(unsafe { &mut *key_ptr });
+      self.mark_value(unsafe { &*value_ptr });
+    }
+  }
+
+  pub fn mark_value(&mut self, value: &Value) {
+    if let Reference(gc_ptr) = value {
+      self.mark_object(unsafe { &mut **gc_ptr });
+    }
+  }
+
+  pub fn sweep(&mut self) {
+    let mut prev_opt = None;
+    let mut current_ptr = self.objects;
+
+    while !current_ptr.is_null() {
+      let this_ptr = current_ptr;
+      let gc_obj = unsafe { &mut *current_ptr };
+      current_ptr = gc_obj.next;
+      if gc_obj.is_marked {
+        gc_obj.is_marked = false;
+        prev_opt = Some(gc_obj);
+      } else {
+        if let Some(ref mut prev) = prev_opt {
+          prev.next = current_ptr;
+        } else {
+          self.objects = current_ptr;
+        }
+        gc_obj.free();
+        unsafe {
+          drop(Box::from_raw(this_ptr));
+        }
+      }
+    }
+  }
+
+  pub fn trace_references(&mut self) {
+    while let Some(next_gc_ptr) = self.grays.pop() {
+      let next_gc_obj = unsafe { &*next_gc_ptr };
+      let blackenables = next_gc_obj.blackenables();
+      for bable in blackenables {
+        match bable {
+          Blackenable::Array(array) => {
+            self.mark_array(array);
+          },
+          Blackenable::Object(obj) => {
+            self.mark_object(obj);
+          },
+          Blackenable::Value(value) => {
+            self.mark_value(value);
+          },
+        }
+      }
+    }
   }
 }
 
