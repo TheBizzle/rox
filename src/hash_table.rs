@@ -10,6 +10,7 @@ use crate::value::Value;
 
 const TABLE_MAX_LOAD: f64 = 0.75;
 
+#[derive(Eq, PartialEq)]
 #[repr(C)]
 pub struct HashTable {
   capacity: usize,

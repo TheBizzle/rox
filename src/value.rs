@@ -5,7 +5,8 @@ use crate::memory::{free_array, grow_array, next_capacity};
 
 use crate::gc::GcObject;
 use crate::gc::HeapObject::{
-  HeapClass, HeapClosure, HeapFunction, HeapNativeFn, HeapObjInstance, HeapString, HeapUpvalue,
+  HeapBoundMethod, HeapClass, HeapClosure, HeapFunction, HeapNativeFn, HeapObjInstance, HeapString,
+  HeapUpvalue,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -25,6 +26,7 @@ impl Value {
       Self::Boolean(false) => "false".to_string(),
       Self::Nil => "nil".to_string(),
       Self::Reference(gc_ptr) => match unsafe { &**gc_ptr }.object {
+        HeapBoundMethod(bound_method_ptr) => unsafe { &*bound_method_ptr }.to_string(),
         HeapClass(class_obj_ptr) => unsafe { &*class_obj_ptr }.to_string(),
         HeapClosure(fn_obj_ptr) => unsafe { &*fn_obj_ptr }.to_string(),
         HeapFunction(fn_ptr) => unsafe { &*fn_ptr }.to_string(),

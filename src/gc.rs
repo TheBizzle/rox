@@ -31,9 +31,16 @@ impl GcObject {
     }
 
     match self.object {
+      HeapBoundMethod(obj_ptr) => {
+        let receiver = &(unsafe { &mut *obj_ptr }.receiver);
+        let method_ref = unsafe { &mut *obj_ptr }.method_gc_mut();
+        vec![Blackenable::Value(receiver), Blackenable::Object(method_ref)]
+      },
+
       HeapClass(obj_ptr) => {
-        let class_obj = unsafe { &mut *obj_ptr };
-        vec![Blackenable::Object(class_obj.name_gc_mut())]
+        let name_obj = unsafe { &mut *obj_ptr }.name_gc_mut();
+        let methods_ref = &mut unsafe { &mut *obj_ptr }.methods;
+        vec![Blackenable::Object(name_obj), Blackenable::Table(methods_ref)]
       },
 
       HeapClosure(obj_ptr) => {
@@ -108,6 +115,7 @@ enum Blackenable {
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HeapObject {
+  HeapBoundMethod(*mut BoundMethodObj),
   HeapClass(*mut ClassObj),
   HeapClosure(*mut ClosureObj),
   HeapFunction(*mut FunctionObj),
@@ -117,58 +125,97 @@ pub enum HeapObject {
   HeapUpvalue(*mut UpvalueObj),
 }
 use HeapObject::{
-  HeapClass, HeapClosure, HeapFunction, HeapNativeFn, HeapObjInstance, HeapString, HeapUpvalue,
+  HeapBoundMethod, HeapClass, HeapClosure, HeapFunction, HeapNativeFn, HeapObjInstance, HeapString,
+  HeapUpvalue,
 };
 
 impl Freeable for HeapObject {
   fn free(&mut self) {
-    match &self {
+    let (ptr, layout) = match &self {
+      HeapBoundMethod(bound_method_ptr) => {
+        unsafe { &mut **bound_method_ptr }.free();
+        (bound_method_ptr.cast::<u8>(), Layout::new::<ClassObj>())
+      },
       HeapClass(class_ptr) => {
         unsafe { &mut **class_ptr }.free();
-        let layout = Layout::new::<ClassObj>();
-        unsafe { dealloc(class_ptr.cast::<u8>(), layout) };
+        (class_ptr.cast::<u8>(), Layout::new::<ClassObj>())
       },
       HeapClosure(function_obj_ptr) => {
         unsafe { &mut **function_obj_ptr }.free();
-        let layout = Layout::new::<ClosureObj>();
-        unsafe { dealloc(function_obj_ptr.cast::<u8>(), layout) };
+        (function_obj_ptr.cast::<u8>(), Layout::new::<ClosureObj>())
       },
       HeapFunction(function_ptr) => {
         unsafe { &mut **function_ptr }.free();
-        let layout = Layout::new::<FunctionObj>();
-        unsafe { dealloc(function_ptr.cast::<u8>(), layout) };
+        (function_ptr.cast::<u8>(), Layout::new::<FunctionObj>())
       },
       HeapNativeFn(native_fn_ptr) => {
         unsafe { &mut **native_fn_ptr }.free();
-        let layout = Layout::new::<NativeFnObj>();
-        unsafe { dealloc(native_fn_ptr.cast::<u8>(), layout) };
+        (native_fn_ptr.cast::<u8>(), Layout::new::<NativeFnObj>())
       },
       HeapObjInstance(obj_instance_ptr) => {
         unsafe { &mut **obj_instance_ptr }.free();
-        let layout = Layout::new::<FunctionObj>();
-        unsafe { dealloc(obj_instance_ptr.cast::<u8>(), layout) };
+        (obj_instance_ptr.cast::<u8>(), Layout::new::<FunctionObj>())
       },
       HeapString(string_ptr) => {
         unsafe { &mut **string_ptr }.free();
-        let layout = Layout::new::<StringObj>();
-        unsafe { dealloc(string_ptr.cast::<u8>(), layout) };
+        (string_ptr.cast::<u8>(), Layout::new::<StringObj>())
       },
       HeapUpvalue(upvalue_ptr) => {
         unsafe { &mut **upvalue_ptr }.free();
-        let layout = Layout::new::<UpvalueObj>();
-        unsafe { dealloc(upvalue_ptr.cast::<u8>(), layout) };
+        (upvalue_ptr.cast::<u8>(), Layout::new::<UpvalueObj>())
       },
-    }
+    };
+
+    unsafe { dealloc(ptr, layout) };
   }
+}
+
+#[derive(PartialEq)]
+#[repr(C)]
+pub struct BoundMethodObj {
+  pub receiver: Value,
+  pub method_gc_ptr: *mut GcObject, // *ClosureObj
+}
+
+impl BoundMethodObj {
+  pub fn method(&self) -> &ClosureObj {
+    let HeapClosure(closure_obj_ptr) = self.method_gc().object else {
+      panic!("Bound method cannot contain non-closure");
+    };
+    unsafe { &mut *closure_obj_ptr }
+  }
+
+  pub fn method_gc(&self) -> &GcObject {
+    unsafe { &*self.method_gc_ptr }
+  }
+
+  pub fn method_gc_mut(&mut self) -> &mut GcObject {
+    unsafe { &mut *self.method_gc_ptr }
+  }
+}
+
+impl Display for BoundMethodObj {
+  fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
+    write!(formatter, "{}", self.method().function())
+  }
+}
+
+impl Freeable for BoundMethodObj {
+  fn free(&mut self) {} // It doesn't own anything that it references. --Jason B. (8/29/26)
 }
 
 #[derive(Eq, PartialEq)]
 #[repr(C)]
 pub struct ClassObj {
   pub name_gc_ptr: *mut GcObject, // *StringObj
+  pub methods: HashTable,
 }
 
 impl ClassObj {
+  pub const fn new(name_gc_ptr: *mut GcObject) -> Self {
+    Self { name_gc_ptr, methods: HashTable::new() }
+  }
+
   pub fn name(&self) -> &StringObj {
     let HeapString(name_obj_ptr) = self.name_gc().object else {
       panic!("Class name cannot be non-string");
@@ -195,6 +242,7 @@ impl Freeable for ClassObj {
   fn free(&mut self) {
     let name_heap_obj = &mut unsafe { &mut *self.name_gc_ptr }.object;
     name_heap_obj.free();
+    self.methods.free();
   }
 }
 
@@ -332,6 +380,7 @@ impl PartialEq for NativeFnObj {
   }
 }
 
+#[derive(Eq, PartialEq)]
 #[repr(C)]
 pub struct ObjInstanceObj {
   class_gc_ptr: *mut GcObject,
@@ -347,7 +396,7 @@ impl ObjInstanceObj {
     unsafe { &mut *self.class_gc_ptr }
   }
 
-  fn class(&self) -> &ClassObj {
+  pub fn class(&self) -> &ClassObj {
     unsafe { &*self.class_obj_ptr() }
   }
 
@@ -422,6 +471,8 @@ pub struct Gc {
   pub(super) head_open_upvalue_gc_opt: Option<*mut GcObject>,
   objects: *mut GcObject,
   strings: HashTable,
+
+  pub(super) init_str_gc_ptr: *mut GcObject,
 }
 
 impl Freeable for Gc {
@@ -444,14 +495,24 @@ impl Freeable for Gc {
 }
 
 impl Gc {
-  pub const fn new() -> Self {
-    Self {
+  pub fn new() -> Self {
+    let mut this = Self {
       globals: HashTable::new(),
       grays: Vec::new(),
       head_open_upvalue_gc_opt: None,
       objects: null_mut(),
       strings: HashTable::new(),
-    }
+      init_str_gc_ptr: null_mut(),
+    };
+
+    let init_name = "init";
+    this.init_str_gc_ptr = this.copy_string(init_name, 0, init_name.len()).1;
+
+    this
+  }
+
+  pub fn allocate_bound_method(&mut self, bound_method_obj: BoundMethodObj) -> GcPtr {
+    self.allocate_on_heap(bound_method_obj, HeapBoundMethod).1
   }
 
   pub fn allocate_class(&mut self, class_obj: ClassObj) -> GcPtr {

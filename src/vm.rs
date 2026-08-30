@@ -8,24 +8,26 @@ use std::time::Instant;
 
 use crate::compiler::{
   Compiler,
-  FunctionKind::{self, Function, Script},
+  FunctionKind::{self, Function, Method, Script},
 };
 
 use crate::disassembler::disassemble_instruction;
 
 use crate::gc::FunctionObj::{MainScript, UserDefined};
 use crate::gc::HeapObject::{
-  HeapClass, HeapClosure, HeapFunction, HeapNativeFn, HeapObjInstance, HeapString, HeapUpvalue,
+  HeapBoundMethod, HeapClass, HeapClosure, HeapFunction, HeapNativeFn, HeapObjInstance, HeapString,
+  HeapUpvalue,
 };
 use crate::gc::{
-  ClassObj, ClosureObj, DEBUG_LOG_GC, DEBUG_STRESS_GC, Gc, GcObject, NativeFnObj, ObjInstanceObj, UpvalueObj,
-  objs_are_equal,
+  BoundMethodObj, ClassObj, ClosureObj, DEBUG_LOG_GC, DEBUG_STRESS_GC, Gc, GcObject, NativeFnObj,
+  ObjInstanceObj, StringObj, UpvalueObj, objs_are_equal,
 };
 
 use crate::opcode::OpCode::{
   self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
-  GetLocal, GetProperty, GetUpvalue, Greater, Jump, JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop,
-  Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract, True,
+  GetLocal, GetProperty, GetUpvalue, Greater, Invoke, Jump, JumpIfFalse, Less, Loop, Method as MethodCode,
+  Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract,
+  True,
 };
 
 use crate::memory::Freeable;
@@ -289,7 +291,7 @@ impl VM {
 
         Some(Class) => {
           let (_, name_gc_ptr) = read_string!();
-          let x = self.compiler.gc.allocate_class(ClassObj { name_gc_ptr });
+          let x = self.compiler.gc.allocate_class(ClassObj::new(name_gc_ptr));
           push_and_win!(Reference(x))
         },
         Some(CloseUpvalue) => {
@@ -383,6 +385,8 @@ impl VM {
             if let Some(property_value) = instance_obj.fields.get(str_obj_ptr) {
               self.pop();
               push_and_win!(unsafe { &*property_value }.clone())
+            } else if let Some(value_gc_ptr) = self.bind_method(instance_obj.class(), str_obj_ptr) {
+              push_and_win!(Reference(value_gc_ptr))
             } else {
               let name_str = unsafe { &*str_obj_ptr };
               runtime_error!("Undefined property '{name_str}'.")
@@ -402,6 +406,12 @@ impl VM {
           push_and_win!(value)
         },
         Some(Greater) => binary_op!(Boolean, >),
+
+        Some(Invoke) => {
+          let (name_ptr, _) = read_string!();
+          let arg_count = read_u8!();
+          self.invoke(name_ptr, arg_count).unwrap_or(Continue)
+        },
 
         Some(Jump) => {
           let offset = read_u16!();
@@ -429,6 +439,11 @@ impl VM {
           Continue
         },
 
+        Some(MethodCode) => {
+          let (_, method_name_gc_ptr) = read_string!();
+          self.define_method(method_name_gc_ptr);
+          Continue
+        },
         Some(Multiply) => binary_op!(Double, *),
 
         Some(Negate) => {
@@ -555,7 +570,7 @@ impl VM {
         self.runtime_error_impl(format_args!("Stack overflow."));
         Some(Error)
       } else {
-        if function_kind == &Function {
+        if function_kind != &Script {
           self.current_frame_index += 1;
         }
         let current = &mut self.frames[self.current_frame_index];
@@ -574,13 +589,40 @@ impl VM {
 
   fn call_value_for_error(&mut self, callee: &Value, arg_count: u8) -> Option<ProgressState> {
     if let Reference(gc_ptr) = callee
+      && let HeapBoundMethod(bound_method_ptr) = unsafe { &**gc_ptr }.object
+      && !bound_method_ptr.is_null()
+      && let bound_method_obj = unsafe { &*bound_method_ptr }
+      && let HeapClosure(closure_obj_ptr) = unsafe { &*bound_method_obj.method_gc_ptr }.object
+    {
+      unsafe { *self.stack_top.sub((arg_count + 1) as usize) = bound_method_obj.receiver.clone() };
+      self.call_function_for_error(closure_obj_ptr, bound_method_obj.method_gc_ptr, arg_count, &Function)
+    } else if let Reference(gc_ptr) = callee
       && let HeapClass(class_obj_ptr) = unsafe { &**gc_ptr }.object
       && !class_obj_ptr.is_null()
     {
       let obj_instance_obj = ObjInstanceObj::new(*gc_ptr);
       let obj_instance_gc_ptr = self.compiler.gc.allocate_obj_instance(obj_instance_obj);
       unsafe { *self.stack_top.sub((arg_count + 1) as usize) = Reference(obj_instance_gc_ptr) };
-      None
+
+      let HeapString(init_str_ptr) = unsafe { &*self.compiler.gc.init_str_gc_ptr }.object else {
+        panic!("`init`'s name must be a string!");
+      };
+
+      let class_obj = unsafe { &*class_obj_ptr };
+      if let Some(value_ptr) = class_obj.methods.get(init_str_ptr) {
+        let Reference(closure_gc_ptr) = (unsafe { &*value_ptr }) else {
+          panic!("`init` must be a reference!");
+        };
+        let HeapClosure(closure_obj_ptr) = unsafe { &**closure_gc_ptr }.object else {
+          panic!("`init` must be a closure!");
+        };
+        self.call_function_for_error(closure_obj_ptr, *closure_gc_ptr, arg_count, &Method)
+      } else if arg_count == 0 {
+        None
+      } else {
+        self.runtime_error_impl(format_args!("Expected 0 arguments but got {arg_count}."));
+        Some(Error)
+      }
     } else if let Reference(gc_ptr) = callee
       && let HeapClosure(closure_obj_ptr) = unsafe { &**gc_ptr }.object
       && !closure_obj_ptr.is_null()
@@ -704,6 +746,72 @@ impl VM {
 
     self.compiler.gc.mark_tables();
     self.compiler.mark_roots();
+  }
+
+  fn bind_method(&mut self, class: &ClassObj, key_ptr: *const StringObj) -> Option<*mut GcObject> {
+    if let Some(method_ptr) = class.methods.get(key_ptr) {
+      let Reference(ptr) = (unsafe { &*method_ptr }) else {
+        panic!("Bound method must be a method!");
+      };
+
+      let bound_method_obj = BoundMethodObj { receiver: self.peek(0), method_gc_ptr: *ptr };
+      let bound_method_ptr = self.compiler.gc.allocate_bound_method(bound_method_obj);
+      self.pop();
+      Some(bound_method_ptr)
+    } else {
+      None
+    }
+  }
+
+  fn define_method(&mut self, name_ptr: *const GcObject) {
+    let Reference(class_gc_ptr) = self.peek(1) else {
+      panic!("Method's owner must be a reference!");
+    };
+
+    let HeapClass(class_obj_ptr) = unsafe { &*class_gc_ptr }.object else {
+      panic!("Method's owner must be a class!");
+    };
+
+    let class_obj = unsafe { &mut *class_obj_ptr };
+    class_obj.methods.set(name_ptr, self.peek(0));
+
+    self.pop();
+  }
+
+  fn invoke(&mut self, name: *const StringObj, arg_count: u8) -> Option<ProgressState> {
+    let receiver = self.peek(arg_count as usize);
+    if let Reference(gc_ptr) = receiver
+      && let HeapObjInstance(obj_instance_ptr) = unsafe { &*gc_ptr }.object
+    {
+      let obj_instance = unsafe { &*obj_instance_ptr };
+      if let Some(value_ptr) = obj_instance.fields.get(name) {
+        let value = unsafe { &*value_ptr };
+        self.call_value_for_error(value, arg_count)
+      } else {
+        self.invoke_from_class(obj_instance.class(), name, arg_count)
+      }
+    } else {
+      self.runtime_error_impl(format_args!("Only instances have methods."));
+      Some(Error)
+    }
+  }
+
+  fn invoke_from_class(
+    &mut self, class: &ClassObj, name_ptr: *const StringObj, arg_count: u8,
+  ) -> Option<ProgressState> {
+    if let Some(value_ptr) = class.methods.get(name_ptr) {
+      let Reference(closure_gc_ptr) = (unsafe { &*value_ptr }) else {
+        panic!("Method must be a reference!");
+      };
+      let HeapClosure(closure_obj_ptr) = unsafe { &**closure_gc_ptr }.object else {
+        panic!("Method must be a closure!");
+      };
+      self.call_function_for_error(closure_obj_ptr, *closure_gc_ptr, arg_count, &Method)
+    } else {
+      let name = unsafe { &*name_ptr };
+      self.runtime_error_impl(format_args!("Undefined property '{name}'."));
+      Some(Error)
+    }
   }
 }
 

@@ -4,8 +4,8 @@ use crate::gc::{GcObject, HeapObject::HeapFunction};
 
 use crate::opcode::OpCode::{
   self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
-  GetLocal, GetProperty, GetUpvalue, Greater, Jump, JumpIfFalse, Less, Loop, Multiply, Negate, Nil, Not, Pop,
-  Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract, True,
+  GetLocal, GetProperty, GetUpvalue, Greater, Invoke, Jump, JumpIfFalse, Less, Loop, Method, Multiply,
+  Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract, True,
 };
 
 use crate::value::Value::Reference;
@@ -31,9 +31,9 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
 
   let ordinal = unsafe { *chunk.op_codes.add(offset) };
   match OpCode::from_repr(ordinal) {
-    Some(x @ (Class | Constant | DefineGlobal | GetGlobal | GetProperty | SetGlobal | SetProperty)) => {
-      constant_instruction(&x, chunk, offset)
-    },
+    Some(
+      x @ (Class | Constant | DefineGlobal | GetGlobal | GetProperty | Method | SetGlobal | SetProperty),
+    ) => constant_instruction(&x, chunk, offset),
     Some(
       x @ (Add | CloseUpvalue | Divide | Equal | False | Greater | Less | Multiply | Negate | Nil | Not
       | Print | Pop | Return | Subtract | True),
@@ -41,6 +41,7 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
     Some(x @ (FnCall | GetLocal | GetUpvalue | SetLocal | SetUpvalue)) => byte_instruction(&x, chunk, offset),
     Some(x @ (Jump | JumpIfFalse | Loop)) => jump_instruction(&x, 1, chunk, offset),
     Some(x @ Closure) => closure_instruction(&x, chunk, offset),
+    Some(x @ Invoke) => invoke_instruction(&x, chunk, offset),
     None => {
       println!("Unknown opcode: {chunk:?} | {offset}");
       offset + 1
@@ -74,8 +75,7 @@ fn closure_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize 
       let upvalue_index = unsafe { &*chunk.op_codes.add(wip_offset) };
       wip_offset += 1;
 
-      #[allow(clippy::obfuscated_if_else)]
-      let locality = (*is_local == 1).then_some("local").unwrap_or("upvalue");
+      let locality = if *is_local == 1 { "local" } else { "upvalue" };
       println!("{}      |                     {locality} {upvalue_index}", wip_offset - 2);
     }
     wip_offset
@@ -89,6 +89,14 @@ fn constant_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize
   let value_str = unsafe { (*chunk.constants.values.add(constant_index as usize)).stringify() };
   println!("{op_code:<16?} {constant_index:>4} '{value_str}'");
   offset + 2
+}
+
+fn invoke_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize {
+  let constant_index = unsafe { *chunk.op_codes.add(offset + 1) };
+  let arg_count = unsafe { *chunk.op_codes.add(offset + 2) };
+  let value_str = unsafe { (*chunk.constants.values.add(constant_index as usize)).stringify() };
+  println!("{op_code:<16?} ({arg_count} args) {constant_index:>4} '{value_str}'");
+  offset + 3
 }
 
 fn jump_instruction(op_code: &OpCode, sign: u32, chunk: &Chunk, offset: usize) -> usize {

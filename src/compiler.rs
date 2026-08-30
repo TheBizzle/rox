@@ -6,9 +6,10 @@ use crate::disassembler::disassemble_chunk;
 
 use crate::opcode::OpCode::{
   self, Add, Class as ClassCode, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal as EqualCode,
-  False as FalseCode, FnCall, GetGlobal, GetLocal, GetProperty, GetUpvalue, Greater as GreaterCode, Jump,
-  JumpIfFalse, Less as LessCode, Loop, Multiply, Negate, Nil as NilCode, Not, Pop, Print as PrintCode,
-  Return as ReturnCode, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract, True as TrueCode,
+  False as FalseCode, FnCall, GetGlobal, GetLocal, GetProperty, GetUpvalue, Greater as GreaterCode, Invoke,
+  Jump, JumpIfFalse, Less as LessCode, Loop, Method as MethodCode, Multiply, Negate, Nil as NilCode, Not,
+  Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract,
+  True as TrueCode,
 };
 
 use crate::parser::Parser;
@@ -17,11 +18,12 @@ use crate::gc::FunctionObj::{self, MainScript, UserDefined};
 use crate::gc::HeapObject::{HeapFunction, HeapString};
 use crate::gc::{Gc, GcObject};
 
+use crate::token::SourceLoc;
 use crate::token::Token;
 use crate::token::TokenType::{
   self, And, Bang, BangEqual, Class, Comma, Dot, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
   GreaterEqual, Identifier, If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Or,
-  Plus, Print, Return, RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
+  Plus, Print, Return, RightBrace, RightParen, Semicolon, Slash, Star, This, True, Var, While,
 };
 
 use crate::value::Value::{self, Double, Reference};
@@ -90,6 +92,8 @@ fn rule_for(typ: &TokenType) -> ParseRule {
 
     Identifier(_) => (Some(Compiler::parse_var_reference), None, Precedence::Bupkis),
 
+    This => (Some(Compiler::parse_this), None, Precedence::Bupkis),
+
     _ => (None, None, Precedence::Bupkis),
   };
 
@@ -132,15 +136,19 @@ impl LocalVar {
 #[derive(Debug, Eq, PartialEq)]
 pub enum FunctionKind {
   Function,
+  Initializer,
+  Method,
   Script,
 }
-use FunctionKind::{Function, Script};
+use FunctionKind::{Function, Initializer, Method, Script};
 
 #[derive(Debug, Eq, PartialEq)]
 struct Upvalue {
   index: u8,
   is_local: bool,
 }
+
+struct ClassContext {}
 
 struct Program {
   function_gc_ptr: *mut GcObject,
@@ -159,7 +167,19 @@ impl Program {
     let size = u8::MAX as usize;
     let mut v = Vec::with_capacity(size);
     v.resize_with(size, || None);
-    v[0] = Some(GlobalFunction);
+
+    let first_binding = if function_kind == Method || function_kind == Initializer {
+      let name = "this".to_string();
+      let length = u32::try_from(name.len()).unwrap();
+      let loc = SourceLoc { start_index: 0, line_num: 0, column: 0, length };
+      let token = Token { typ: This, loc };
+      LocalBinding { name, token, depth_opt: Some(0), is_captured: false }
+    } else {
+      GlobalFunction
+    };
+
+    v[0] = Some(first_binding);
+
     let local_var_opts = v.try_into().expect("Length must be exactly `u8::MAX`");
 
     let mut v2 = Vec::with_capacity(size);
@@ -226,6 +246,7 @@ impl Program {
 }
 
 pub struct Compiler {
+  class_contexts: Vec<ClassContext>,
   parser: Parser,
   programs: Vec<Program>,
   pub gc: Gc,
@@ -248,7 +269,7 @@ impl Default for Compiler {
     let function_obj = MainScript { arity: 0, chunk: Chunk::default(), upvalue_count: 0 };
     let programs = vec![Program::new(gc.allocate_function(function_obj), Script)];
 
-    Self { parser, programs, gc }
+    Self { class_contexts: Vec::new(), parser, programs, gc }
   }
 }
 
@@ -258,6 +279,9 @@ impl Compiler {
       let function_gc = unsafe { &mut *program.function_gc_ptr };
       self.gc.mark_object(function_gc);
     }
+
+    let init_str_gc = unsafe { &mut *self.gc.init_str_gc_ptr };
+    self.gc.mark_object(init_str_gc);
   }
 
   pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {
@@ -328,7 +352,12 @@ impl Compiler {
   }
 
   fn emit_return(&mut self) {
-    self.emit_byte(NilCode);
+    if self.program().function_kind == Initializer {
+      self.emit_bytes(GetLocal, 0);
+    } else {
+      self.emit_byte(NilCode);
+    }
+
     self.emit_byte(ReturnCode);
   }
 
@@ -424,9 +453,19 @@ impl Compiler {
 
     self.emit_bytes(ClassCode, name_byte);
     self.define_variable(name_byte);
+    self.class_contexts.push(ClassContext {});
+    self.make_named_variable(false);
 
     self.parser.consume(&LeftBrace, "Expect '{' before class body.");
+
+    while !matches!(self.parser.current_token_opt.as_ref().unwrap().typ, RightBrace | Eof) {
+      self.parse_method();
+    }
+
     self.parser.consume(&RightBrace, "Expect '}' after class body.");
+
+    self.emit_byte(Pop);
+    self.class_contexts.pop();
   }
 
   fn parse_declaration(&mut self) {
@@ -462,6 +501,10 @@ impl Compiler {
     if can_assign && self.token_is_a(&Equal) {
       self.parse_expression();
       self.emit_bytes(SetProperty, name_byte);
+    } else if self.token_is_a(&LeftParen) {
+      let arg_count = self.parse_args();
+      self.emit_bytes(Invoke, name_byte);
+      self.emit_byte(arg_count);
     } else {
       self.emit_bytes(GetProperty, name_byte);
     }
@@ -524,7 +567,7 @@ impl Compiler {
     }
   }
 
-  fn parse_function(&mut self) {
+  fn parse_function(&mut self, function_kind: FunctionKind) {
     let function_obj = {
       let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
       let start_index = prev_loc.start_index as usize;
@@ -533,7 +576,7 @@ impl Compiler {
       UserDefined { arity: 0, chunk: Chunk::default(), name_gc_ptr, upvalue_count: 0 }
     };
 
-    self.programs.push(Program::new(self.gc.allocate_function(function_obj), Function));
+    self.programs.push(Program::new(self.gc.allocate_function(function_obj), function_kind));
 
     self.program().begin_scope();
 
@@ -577,8 +620,7 @@ impl Compiler {
     self.emit_bytes(Closure, closure);
 
     for (index, is_local) in pairs {
-      #[allow(clippy::obfuscated_if_else)]
-      self.emit_byte(is_local.then_some(1).unwrap_or(0));
+      self.emit_byte(u8::from(is_local));
       self.emit_byte(index);
     }
   }
@@ -591,7 +633,7 @@ impl Compiler {
   fn parse_function_decl(&mut self) {
     let global_var_byte = self.parse_variable("Expect function name.");
     self.program().mark_latest_var_initialized();
-    self.parse_function();
+    self.parse_function(Function);
     self.define_variable(global_var_byte);
   }
 
@@ -626,6 +668,25 @@ impl Compiler {
       True => self.emit_byte(TrueCode),
       _ => {},
     }
+  }
+
+  fn parse_method(&mut self) {
+    let name = self
+      .parser
+      .consume_dyn(
+        |x| match x {
+          Identifier(y) => Some(y.clone()),
+          _ => None,
+        },
+        "Expect method name.",
+      )
+      .unwrap();
+
+    let function_kind = if name == "init" { Initializer } else { Method };
+
+    let name_byte = self.make_ident_constant();
+    self.parse_function(function_kind);
+    self.emit_bytes(MethodCode, name_byte);
   }
 
   fn parse_number(&mut self, _can_assign: bool) {
@@ -671,6 +732,9 @@ impl Compiler {
     } else if self.token_is_a(&Semicolon) {
       self.emit_return();
     } else {
+      if self.program().function_kind == Initializer {
+        self.parser.error("Can't return a value from an initializer.");
+      }
       self.parse_expression();
       self.parser.consume(&Semicolon, "Expect ';' after return value.");
       self.emit_byte(ReturnCode);
@@ -707,6 +771,14 @@ impl Compiler {
     let length = (prev_loc.length - 2) as usize;
     let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, str_start, length);
     self.emit_constant(Reference(gc_ptr));
+  }
+
+  fn parse_this(&mut self, _can_assign: bool) {
+    if self.class_contexts.is_empty() {
+      self.parser.error("Can't use 'this' outside of a class.");
+    } else {
+      self.parse_var_reference(false);
+    }
   }
 
   fn parse_unary(&mut self, _can_assign: bool) {
