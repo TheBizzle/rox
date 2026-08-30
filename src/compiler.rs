@@ -968,7 +968,7 @@ impl Compiler {
   }
 
   fn resolve_upvalue(&mut self, program_index: usize, target_name: &str) -> Option<u8> {
-    if self.program_at(program_index).function_kind != Function || program_index == 0 {
+    if self.program_at(program_index).function_kind == Script || program_index == 0 {
       None
     } else if let Some(local_index) = self.resolve_local(program_index - 1, target_name) {
       let program = self.program_at(program_index - 1);
