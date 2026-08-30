@@ -4,8 +4,9 @@ use crate::gc::{GcObject, HeapObject::HeapFunction};
 
 use crate::opcode::OpCode::{
   self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
-  GetLocal, GetProperty, GetUpvalue, Greater, Invoke, Jump, JumpIfFalse, Less, Loop, Method, Multiply,
-  Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract, True,
+  GetLocal, GetProperty, GetSuper, GetUpvalue, Greater, Inherit, Invoke, Jump, JumpIfFalse, Less, Loop,
+  Method, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue,
+  Subtract, SuperInvoke, True,
 };
 
 use crate::value::Value::Reference;
@@ -32,16 +33,17 @@ pub fn disassemble_instruction(chunk: &Chunk, offset: usize) -> usize {
   let ordinal = unsafe { *chunk.op_codes.add(offset) };
   match OpCode::from_repr(ordinal) {
     Some(
-      x @ (Class | Constant | DefineGlobal | GetGlobal | GetProperty | Method | SetGlobal | SetProperty),
+      x @ (Class | Constant | DefineGlobal | GetGlobal | GetProperty | GetSuper | Method | SetGlobal
+      | SetProperty),
     ) => constant_instruction(&x, chunk, offset),
     Some(
-      x @ (Add | CloseUpvalue | Divide | Equal | False | Greater | Less | Multiply | Negate | Nil | Not
-      | Print | Pop | Return | Subtract | True),
+      x @ (Add | CloseUpvalue | Divide | Equal | False | Greater | Inherit | Less | Multiply | Negate | Nil
+      | Not | Print | Pop | Return | Subtract | True),
     ) => simple_instruction(&x, offset),
     Some(x @ (FnCall | GetLocal | GetUpvalue | SetLocal | SetUpvalue)) => byte_instruction(&x, chunk, offset),
     Some(x @ (Jump | JumpIfFalse | Loop)) => jump_instruction(&x, 1, chunk, offset),
     Some(x @ Closure) => closure_instruction(&x, chunk, offset),
-    Some(x @ Invoke) => invoke_instruction(&x, chunk, offset),
+    Some(x @ (Invoke | SuperInvoke)) => invoke_instruction(&x, chunk, offset),
     None => {
       println!("Unknown opcode: {chunk:?} | {offset}");
       offset + 1

@@ -32,7 +32,7 @@ impl HashTable {
   }
 
   #[allow(unused)]
-  fn copy_into(&mut self, target: &mut Self) {
+  pub fn copy_into(&mut self, target: &mut Self) {
     for i in 0..self.capacity {
       if let Entry { key, value } = unsafe { &*self.cells_ptr.add(i) } {
         target.set(*key, value.clone());

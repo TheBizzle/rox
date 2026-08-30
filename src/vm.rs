@@ -25,9 +25,9 @@ use crate::gc::{
 
 use crate::opcode::OpCode::{
   self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
-  GetLocal, GetProperty, GetUpvalue, Greater, Invoke, Jump, JumpIfFalse, Less, Loop, Method as MethodCode,
-  Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract,
-  True,
+  GetLocal, GetProperty, GetSuper, GetUpvalue, Greater, Inherit, Invoke, Jump, JumpIfFalse, Less, Loop,
+  Method as MethodCode, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty,
+  SetUpvalue, Subtract, SuperInvoke, True,
 };
 
 use crate::memory::Freeable;
@@ -395,6 +395,24 @@ impl VM {
             runtime_error!("Only instances have properties.")
           }
         },
+        Some(GetSuper) => {
+          let (property_str_ptr, _) = read_string!();
+
+          if let Reference(superclass_gc_ptr) = self.pop()
+            && let HeapClass(superclass_obj_ptr) = unsafe { &*superclass_gc_ptr }.object
+          {
+            let superclass_obj = unsafe { &*superclass_obj_ptr };
+
+            if let Some(value_gc_ptr) = self.bind_method(superclass_obj, property_str_ptr) {
+              push_and_win!(Reference(value_gc_ptr))
+            } else {
+              let name_str = unsafe { &*property_str_ptr };
+              runtime_error!("Undefined property '{name_str}'.")
+            }
+          } else {
+            runtime_error!("Only instances can use `super`.")
+          }
+        },
         Some(GetUpvalue) => {
           let slot = read_u8!() as usize;
           let closure = &mut self.frames[self.current_frame_index].closure();
@@ -407,6 +425,25 @@ impl VM {
         },
         Some(Greater) => binary_op!(Boolean, >),
 
+        Some(Inherit) => {
+          if let Reference(super_gc_ptr) = self.peek(1)
+            && let HeapClass(super_class_obj_ptr) = unsafe { &*super_gc_ptr }.object
+            && let superclass = unsafe { &mut *super_class_obj_ptr }
+          {
+            if let Reference(sub_gc_ptr) = self.peek(0)
+              && let HeapClass(sub_class_obj_ptr) = unsafe { &*sub_gc_ptr }.object
+              && let subclass = unsafe { &mut *sub_class_obj_ptr }
+            {
+              superclass.methods.copy_into(&mut subclass.methods);
+              self.pop();
+              Continue
+            } else {
+              runtime_error!("Subclass must be a class.")
+            }
+          } else {
+            runtime_error!("Superclass must be a class.")
+          }
+        },
         Some(Invoke) => {
           let (name_ptr, _) = read_string!();
           let arg_count = read_u8!();
@@ -528,6 +565,18 @@ impl VM {
           Continue
         },
         Some(Subtract) => binary_op!(Double, -),
+        Some(SuperInvoke) => {
+          let (name_ptr, _) = read_string!();
+          let arg_count = read_u8!();
+          let Reference(gc_ptr) = self.pop() else {
+            panic!("Super-invokee value must be a reference");
+          };
+          let HeapClass(class_obj_ptr) = unsafe { &*gc_ptr }.object else {
+            panic!("Super-invokee value must be a class");
+          };
+          let class = unsafe { &*class_obj_ptr };
+          self.invoke_from_class(class, name_ptr, arg_count).unwrap_or(Continue)
+        },
 
         Some(True) => push_and_win!(Boolean(true)),
 

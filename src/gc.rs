@@ -479,6 +479,8 @@ pub struct Gc {
   strings: HashTable,
 
   pub(super) init_str_gc_ptr: *mut GcObject,
+  pub(super) super_str_gc_ptr: *mut GcObject,
+  pub(super) this_str_gc_ptr: *mut GcObject,
 }
 
 impl Freeable for Gc {
@@ -509,10 +511,18 @@ impl Gc {
       objects: null_mut(),
       strings: HashTable::new(),
       init_str_gc_ptr: null_mut(),
+      this_str_gc_ptr: null_mut(),
+      super_str_gc_ptr: null_mut(),
     };
 
     let init_name = "init";
     this.init_str_gc_ptr = this.copy_string(init_name, 0, init_name.len()).1;
+
+    let this_name = "this";
+    this.this_str_gc_ptr = this.copy_string(this_name, 0, this_name.len()).1;
+
+    let super_name = "super";
+    this.super_str_gc_ptr = this.copy_string(super_name, 0, super_name.len()).1;
 
     this
   }

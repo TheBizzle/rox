@@ -16,8 +16,10 @@ pub enum OpCode {
   GetGlobal,
   GetLocal,
   GetProperty,
+  GetSuper,
   GetUpvalue,
   Greater,
+  Inherit,
   Invoke,
   Jump,
   JumpIfFalse,
@@ -36,6 +38,7 @@ pub enum OpCode {
   SetProperty,
   SetUpvalue,
   Subtract,
+  SuperInvoke,
   True,
 }
 

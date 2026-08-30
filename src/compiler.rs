@@ -6,10 +6,10 @@ use crate::disassembler::disassemble_chunk;
 
 use crate::opcode::OpCode::{
   self, Add, Class as ClassCode, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal as EqualCode,
-  False as FalseCode, FnCall, GetGlobal, GetLocal, GetProperty, GetUpvalue, Greater as GreaterCode, Invoke,
-  Jump, JumpIfFalse, Less as LessCode, Loop, Method as MethodCode, Multiply, Negate, Nil as NilCode, Not,
-  Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, SetProperty, SetUpvalue, Subtract,
-  True as TrueCode,
+  False as FalseCode, FnCall, GetGlobal, GetLocal, GetProperty, GetSuper, GetUpvalue, Greater as GreaterCode,
+  Inherit, Invoke, Jump, JumpIfFalse, Less as LessCode, Loop, Method as MethodCode, Multiply, Negate,
+  Nil as NilCode, Not, Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, SetProperty,
+  SetUpvalue, Subtract, SuperInvoke, True as TrueCode,
 };
 
 use crate::parser::Parser;
@@ -23,7 +23,7 @@ use crate::token::Token;
 use crate::token::TokenType::{
   self, And, Bang, BangEqual, Class, Comma, Dot, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
   GreaterEqual, Identifier, If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Or,
-  Plus, Print, Return, RightBrace, RightParen, Semicolon, Slash, Star, This, True, Var, While,
+  Plus, Print, Return, RightBrace, RightParen, Semicolon, Slash, Star, Super, This, True, Var, While,
 };
 
 use crate::value::Value::{self, Double, Reference};
@@ -94,6 +94,8 @@ fn rule_for(typ: &TokenType) -> ParseRule {
 
     This => (Some(Compiler::parse_this), None, Precedence::Bupkis),
 
+    Super => (Some(Compiler::parse_super), None, Precedence::Bupkis),
+
     _ => (None, None, Precedence::Bupkis),
   };
 
@@ -148,7 +150,9 @@ struct Upvalue {
   is_local: bool,
 }
 
-struct ClassContext {}
+struct ClassContext {
+  has_superclass: bool,
+}
 
 struct Program {
   function_gc_ptr: *mut GcObject,
@@ -277,8 +281,11 @@ impl Compiler {
       self.gc.mark_object(function_gc);
     }
 
-    let init_str_gc = unsafe { &mut *self.gc.init_str_gc_ptr };
-    self.gc.mark_object(init_str_gc);
+    // TODO: Just let the GC worry about this
+    for gc_ptr in [self.gc.init_str_gc_ptr, self.gc.super_str_gc_ptr, self.gc.this_str_gc_ptr] {
+      let str_gc = unsafe { &mut *gc_ptr };
+      self.gc.mark_object(str_gc);
+    }
   }
 
   pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {
@@ -434,7 +441,7 @@ impl Compiler {
   }
 
   fn parse_class_decl(&mut self) {
-    let name = self
+    let class_name = self
       .parser
       .consume_dyn(
         |x| match x {
@@ -445,13 +452,47 @@ impl Compiler {
       )
       .unwrap();
 
+    let class_name_gc_ptr = {
+      let loc = self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
+      self.gc.copy_string(&self.parser.source, loc.start_index as usize, loc.length as usize).1
+    };
+
     let name_byte = self.make_ident_constant();
-    self.declare_variable(name);
+    self.declare_variable(class_name.clone());
 
     self.emit_bytes(ClassCode, name_byte);
     self.define_variable(name_byte);
-    self.class_contexts.push(ClassContext {});
-    self.make_named_variable(false);
+    self.class_contexts.push(ClassContext { has_superclass: false });
+
+    if self.token_is_a(&Less) {
+      let superclass_name = self
+        .parser
+        .consume_dyn(
+          |x| match x {
+            Identifier(y) => Some(y.clone()),
+            _ => None,
+          },
+          "Expect superclass name.",
+        )
+        .unwrap();
+      self.make_named_variable(false); // Load superclass
+
+      if class_name == superclass_name {
+        self.parser.error("A class can't inherit from itself.");
+      }
+
+      self.program().begin_scope();
+      let (st_name, st_token) = synthesize_token(Super);
+      self.add_local(st_name, st_token);
+      self.define_variable(0);
+
+      self.reference_named_variable(class_name_gc_ptr, false); // Load subclass
+
+      self.emit_byte(Inherit);
+      self.class_contexts.last_mut().unwrap().has_superclass = true;
+    }
+
+    self.reference_named_variable(class_name_gc_ptr, false);
 
     self.parser.consume(&LeftBrace, "Expect '{' before class body.");
 
@@ -462,7 +503,13 @@ impl Compiler {
     self.parser.consume(&RightBrace, "Expect '}' after class body.");
 
     self.emit_byte(Pop);
-    self.class_contexts.pop();
+
+    if let Some(current_class) = self.class_contexts.last() {
+      if current_class.has_superclass {
+        self.program().end_scope();
+      }
+      self.class_contexts.pop();
+    }
   }
 
   fn parse_declaration(&mut self) {
@@ -770,6 +817,39 @@ impl Compiler {
     self.emit_constant(Reference(gc_ptr));
   }
 
+  fn parse_super(&mut self, _can_assign: bool) {
+    if self.class_contexts.is_empty() {
+      self.parser.error("Can't use 'super' outside of a class.");
+    } else if matches!(self.class_contexts.last(), Some(ClassContext { has_superclass: false })) {
+      self.parser.error("Can't use 'super' in a class with no superclass.");
+    }
+
+    self.parser.consume(&Dot, "Expect '.' after 'super'.");
+    self
+      .parser
+      .consume_dyn(
+        |x| match x {
+          Identifier(y) => Some(y.clone()),
+          _ => None,
+        },
+        "Expect superclass method name.",
+      )
+      .unwrap();
+
+    let name_byte = self.make_ident_constant();
+    self.reference_named_variable(self.gc.this_str_gc_ptr, false);
+
+    if self.token_is_a(&LeftParen) {
+      let arg_count = self.parse_args();
+      self.reference_named_variable(self.gc.super_str_gc_ptr, false);
+      self.emit_bytes(SuperInvoke, name_byte);
+      self.emit_byte(arg_count);
+    } else {
+      self.reference_named_variable(self.gc.super_str_gc_ptr, false);
+      self.emit_bytes(GetSuper, name_byte);
+    }
+  }
+
   fn parse_this(&mut self, _can_assign: bool) {
     if self.class_contexts.is_empty() {
       self.parser.error("Can't use 'this' outside of a class.");
@@ -852,11 +932,10 @@ impl Compiler {
     self.emit_byte(Pop);
   }
 
-  fn add_local(&mut self, name: String) {
+  fn add_local(&mut self, name: String, token: Token) {
     if self.program().local_var_count == u8::MAX {
       self.parser.error("Too many local variables in function.");
     } else {
-      let token = self.parser.previous_token_opt.clone().unwrap();
       let local = LocalBinding { name, token, depth_opt: None, is_captured: false };
       let index = self.program().local_var_count as usize;
       self.program().local_var_opts[index] = Some(local);
@@ -879,7 +958,8 @@ impl Compiler {
           }
         }
       }
-      self.add_local(new_var_name);
+      let token = self.parser.previous_token_opt.clone().unwrap();
+      self.add_local(new_var_name, token);
     }
   }
 
@@ -906,22 +986,33 @@ impl Compiler {
   }
 
   fn make_ident_constant(&mut self) -> u8 {
-    let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
+    let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
     let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, loc.start_index as usize, loc.length as usize);
-    self.make_constant(Reference(gc_ptr))
+    self.reference_ident_constant(gc_ptr)
+  }
+
+  fn reference_ident_constant(&mut self, name_gc_ptr: *mut GcObject) -> u8 {
+    self.make_constant(Reference(name_gc_ptr))
   }
 
   fn make_named_variable(&mut self, can_assign: bool) {
-    let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
-    let name =
-      &self.parser.source[(loc.start_index as usize)..((loc.start_index + loc.length) as usize)].to_string();
+    let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
+    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, loc.start_index as usize, loc.length as usize);
+    self.reference_named_variable(gc_ptr, can_assign);
+  }
+
+  fn reference_named_variable(&mut self, name_gc_ptr: *mut GcObject, can_assign: bool) {
+    let HeapString(name_obj_ptr) = unsafe { &*name_gc_ptr }.object else {
+      panic!("Token name must be a string");
+    };
+    let name = unsafe { &*name_obj_ptr }.to_text();
     let program_index = self.programs.len() - 1;
-    let (arg, get_op, set_op) = if let Some(local_index) = self.resolve_local(program_index, name) {
+    let (arg, get_op, set_op) = if let Some(local_index) = self.resolve_local(program_index, &name) {
       (local_index, GetLocal, SetLocal)
-    } else if let Some(x) = self.resolve_upvalue(self.programs.len() - 1, name) {
+    } else if let Some(x) = self.resolve_upvalue(self.programs.len() - 1, &name) {
       (x, GetUpvalue, SetUpvalue)
     } else {
-      (self.make_ident_constant(), GetGlobal, SetGlobal)
+      (self.reference_ident_constant(name_gc_ptr), GetGlobal, SetGlobal)
     };
 
     if can_assign && self.token_is_a(&Equal) {
