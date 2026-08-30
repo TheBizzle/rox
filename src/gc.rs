@@ -618,23 +618,21 @@ impl Gc {
   }
 
   pub fn copy_string(&mut self, str: &str, start_index: usize, length: usize) -> (StrPtr, GcPtr) {
-    let layout = Layout::array::<u8>(length).unwrap();
-    let ptr = unsafe { alloc(layout) };
-    if ptr.is_null() {
-      eprintln!("Reallocation for characters failed");
-      handle_alloc_error(layout);
-    }
-
     let substring = &str[start_index..(start_index + length)];
-    unsafe {
-      copy_nonoverlapping(substring.as_ptr(), ptr, length);
-    }
-
-    let hash = hash_string(ptr, length);
+    let hash = hash_string(substring.as_ptr(), length);
     #[allow(clippy::option_if_let_else)]
-    if let Some(ptr_pair) = self.find_string(ptr, length, hash) {
+    if let Some(ptr_pair) = self.find_string(substring.as_ptr(), length, hash) {
       ptr_pair
     } else {
+      let layout = Layout::array::<u8>(length).unwrap();
+      let ptr = unsafe { alloc(layout) };
+      if ptr.is_null() {
+        eprintln!("Reallocation for characters failed");
+        handle_alloc_error(layout);
+      }
+      unsafe {
+        copy_nonoverlapping(substring.as_ptr(), ptr, length);
+      }
       self.allocate_string(ptr, length, hash)
     }
   }
