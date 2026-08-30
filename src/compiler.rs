@@ -169,10 +169,7 @@ impl Program {
     v.resize_with(size, || None);
 
     let first_binding = if function_kind == Method || function_kind == Initializer {
-      let name = "this".to_string();
-      let length = u32::try_from(name.len()).unwrap();
-      let loc = SourceLoc { start_index: 0, line_num: 0, column: 0, length };
-      let token = Token { typ: This, loc };
+      let (name, token) = synthesize_token(This);
       LocalBinding { name, token, depth_opt: Some(0), is_captured: false }
     } else {
       GlobalFunction
@@ -1007,4 +1004,18 @@ impl Compiler {
     self.parser.advance();
     true
   }
+}
+
+fn synthesize_token(typ: TokenType) -> (String, Token) {
+  let name = match typ {
+    This => "this",
+    Super => "super",
+    x => panic!("It is illegal to synthesize a token for: {x:?}"),
+  };
+
+  let length = u32::try_from(name.len()).unwrap();
+  let loc = SourceLoc { start_index: 0, line_num: 0, column: 0, length };
+  let token = Token { loc, typ };
+
+  (name.to_string(), token)
 }
