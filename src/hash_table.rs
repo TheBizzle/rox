@@ -102,7 +102,7 @@ impl HashTable {
     if self.count == 0 {
       None
     } else {
-      let mut index = (hash as usize) % self.capacity;
+      let mut index = (hash as usize) & (self.capacity - 1);
       loop {
         match unsafe { &*self.cells_ptr.add(index) } {
           NeverFilled => {
@@ -122,7 +122,7 @@ impl HashTable {
             return Some(*key_ptr);
           },
           _ => {
-            index = (index + 1) % self.capacity;
+            index = (index + 1) & (self.capacity - 1);
           },
         }
       }
@@ -193,7 +193,7 @@ impl HashTable {
 #[allow(clippy::option_option)]
 fn find_cell(entry_opts: *mut Cell, capacity: usize, key_ptr: *const StringObj) -> *mut Cell {
   let key = unsafe { &*key_ptr };
-  let mut index = (key.hash as usize) % capacity;
+  let mut index = (key.hash as usize) & (capacity - 1);
 
   let mut last_tombstone_ptr_opt: Option<*mut Cell> = None;
 
@@ -206,11 +206,11 @@ fn find_cell(entry_opts: *mut Cell, capacity: usize, key_ptr: *const StringObj) 
         return ptr;
       },
       Entry { .. } => {
-        index = (index + 1) % capacity;
+        index = (index + 1) & (capacity - 1);
       },
       Tombstone => {
         last_tombstone_ptr_opt = Some(ptr);
-        index = (index + 1) % capacity;
+        index = (index + 1) & (capacity - 1);
       },
       NeverFilled => {
         return last_tombstone_ptr_opt.unwrap_or(ptr);
