@@ -433,10 +433,16 @@ pub struct StringObj {
   pub hash: u32,
 }
 
+impl StringObj {
+  pub fn to_text(&self) -> String {
+    let bytes = unsafe { from_raw_parts(self.chars, self.length) };
+    String::from_utf8(bytes.to_vec()).expect("Invalid UTF-8 bytes")
+  }
+}
+
 impl Display for StringObj {
   fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
-    let bytes = unsafe { from_raw_parts(self.chars, self.length) };
-    write!(formatter, "\"{}\"", String::from_utf8(bytes.to_vec()).expect("Invalid UTF-8 bytes"))
+    write!(formatter, "\"{}\"", self.to_text())
   }
 }
 

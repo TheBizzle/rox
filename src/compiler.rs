@@ -303,7 +303,7 @@ impl Compiler {
           let HeapString(name_ptr) = unsafe { &**name_gc_ptr }.object else {
             panic!("Not possible for name pointer to be non-string");
           };
-          unsafe { &*name_ptr }.to_string()
+          unsafe { &*name_ptr }.to_text()
         },
       };
       disassemble_chunk(self.program().chunk(), &fn_display);

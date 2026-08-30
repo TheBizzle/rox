@@ -709,8 +709,7 @@ impl VM {
           let HeapString(name_ptr) = unsafe { &**name_gc_ptr }.object else {
             panic!("Not possible for name pointer to be non-string");
           };
-          let string = unsafe { &*name_ptr }.to_string();
-          format!("{}()", &string[1..(string.len() - 1)])
+          format!("{}()", unsafe { &*name_ptr }.to_text())
         },
       };
 
