@@ -4,6 +4,9 @@ set -euo pipefail
 cargo_args=()
 if [[ $# -gt 0 ]]; then
     cargo_args+=(--release)
+    project_version=release
+else
+    project_version=debug
 fi
 
 echo "=== rustfmt ==="
@@ -18,7 +21,7 @@ cargo clippy --all-targets "${cargo_args[@]}" -- -D warnings
 echo "=== Tests ==="
 cargo test "${cargo_args[@]}"
 
-LOX=$(realpath "$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')")/debug/rox
+LOX=$(realpath "$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')")/$project_version/rox
 
 echo "=== Lox test suite ==="
 (
