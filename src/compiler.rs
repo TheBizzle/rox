@@ -441,74 +441,69 @@ impl Compiler {
   }
 
   fn parse_class_decl(&mut self) {
-    let class_name = self
-      .parser
-      .consume_dyn(
-        |x| match x {
-          Identifier(y) => Some(y.clone()),
-          _ => None,
-        },
-        "Expect class name.",
-      )
-      .unwrap();
+    if let Some(class_name) = self.parser.consume_dyn(
+      |x| match x {
+        Identifier(y) => Some(y.clone()),
+        _ => None,
+      },
+      "Expect class name.",
+    ) {
+      let class_name_gc_ptr = {
+        let loc = self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
+        self.gc.copy_string(&self.parser.source, loc.start_index as usize, loc.length as usize).1
+      };
 
-    let class_name_gc_ptr = {
-      let loc = self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
-      self.gc.copy_string(&self.parser.source, loc.start_index as usize, loc.length as usize).1
-    };
+      let name_byte = self.make_ident_constant();
+      self.declare_variable(class_name.clone());
 
-    let name_byte = self.make_ident_constant();
-    self.declare_variable(class_name.clone());
+      self.emit_bytes(ClassCode, name_byte);
+      self.define_variable(name_byte);
+      self.class_contexts.push(ClassContext { has_superclass: false });
 
-    self.emit_bytes(ClassCode, name_byte);
-    self.define_variable(name_byte);
-    self.class_contexts.push(ClassContext { has_superclass: false });
-
-    if self.token_is_a(&Less) {
-      let superclass_name = self
-        .parser
-        .consume_dyn(
+      if self.token_is_a(&Less)
+        && let Some(superclass_name) = self.parser.consume_dyn(
           |x| match x {
             Identifier(y) => Some(y.clone()),
             _ => None,
           },
           "Expect superclass name.",
         )
-        .unwrap();
-      self.make_named_variable(false); // Load superclass
+      {
+        self.make_named_variable(false); // Load superclass
 
-      if class_name == superclass_name {
-        self.parser.error("A class can't inherit from itself.");
+        if class_name == superclass_name {
+          self.parser.error("A class can't inherit from itself.");
+        }
+
+        self.program().begin_scope();
+        let (st_name, st_token) = synthesize_token(Super);
+        self.add_local(st_name, st_token);
+        self.define_variable(0);
+
+        self.reference_named_variable(class_name_gc_ptr, false); // Load subclass
+
+        self.emit_byte(Inherit);
+        self.class_contexts.last_mut().unwrap().has_superclass = true;
       }
 
-      self.program().begin_scope();
-      let (st_name, st_token) = synthesize_token(Super);
-      self.add_local(st_name, st_token);
-      self.define_variable(0);
+      self.reference_named_variable(class_name_gc_ptr, false);
 
-      self.reference_named_variable(class_name_gc_ptr, false); // Load subclass
+      self.parser.consume(&LeftBrace, "Expect '{' before class body.");
 
-      self.emit_byte(Inherit);
-      self.class_contexts.last_mut().unwrap().has_superclass = true;
-    }
-
-    self.reference_named_variable(class_name_gc_ptr, false);
-
-    self.parser.consume(&LeftBrace, "Expect '{' before class body.");
-
-    while !matches!(self.parser.current_token_opt.as_ref().unwrap().typ, RightBrace | Eof) {
-      self.parse_method();
-    }
-
-    self.parser.consume(&RightBrace, "Expect '}' after class body.");
-
-    self.emit_byte(Pop);
-
-    if let Some(current_class) = self.class_contexts.last() {
-      if current_class.has_superclass {
-        self.program().end_scope();
+      while !matches!(self.parser.current_token_opt.as_ref().unwrap().typ, RightBrace | Eof) {
+        self.parse_method();
       }
-      self.class_contexts.pop();
+
+      self.parser.consume(&RightBrace, "Expect '}' after class body.");
+
+      self.emit_byte(Pop);
+
+      if let Some(current_class) = self.class_contexts.last() {
+        if current_class.has_superclass {
+          self.program().end_scope();
+        }
+        self.class_contexts.pop();
+      }
     }
   }
 
@@ -529,28 +524,27 @@ impl Compiler {
   }
 
   fn parse_dot(&mut self, can_assign: bool) {
-    self
-      .parser
-      .consume_dyn(
-        |x| match x {
-          Identifier(y) => Some(y.clone()),
-          _ => None,
-        },
-        "Expect property name after '.'.",
-      )
-      .unwrap();
+    let property_opt = self.parser.consume_dyn(
+      |x| match x {
+        Identifier(y) => Some(y.clone()),
+        _ => None,
+      },
+      "Expect property name after '.'.",
+    );
 
-    let name_byte = self.make_ident_constant();
+    if property_opt.is_some() {
+      let name_byte = self.make_ident_constant();
 
-    if can_assign && self.token_is_a(&Equal) {
-      self.parse_expression();
-      self.emit_bytes(SetProperty, name_byte);
-    } else if self.token_is_a(&LeftParen) {
-      let arg_count = self.parse_args();
-      self.emit_bytes(Invoke, name_byte);
-      self.emit_byte(arg_count);
-    } else {
-      self.emit_bytes(GetProperty, name_byte);
+      if can_assign && self.token_is_a(&Equal) {
+        self.parse_expression();
+        self.emit_bytes(SetProperty, name_byte);
+      } else if self.token_is_a(&LeftParen) {
+        let arg_count = self.parse_args();
+        self.emit_bytes(Invoke, name_byte);
+        self.emit_byte(arg_count);
+      } else {
+        self.emit_bytes(GetProperty, name_byte);
+      }
     }
   }
 
@@ -724,7 +718,8 @@ impl Compiler {
         },
         "Expect method name.",
       )
-      .unwrap();
+      .unwrap(); // TODO: Avoid `unwrap` here without causing
+    // `inheritance/parenthesized_superclass` to hang
 
     let function_kind = if name == "init" { Initializer } else { Method };
 
@@ -825,28 +820,28 @@ impl Compiler {
     }
 
     self.parser.consume(&Dot, "Expect '.' after 'super'.");
-    self
-      .parser
-      .consume_dyn(
-        |x| match x {
-          Identifier(y) => Some(y.clone()),
-          _ => None,
-        },
-        "Expect superclass method name.",
-      )
-      .unwrap();
 
-    let name_byte = self.make_ident_constant();
-    self.reference_named_variable(self.gc.this_str_gc_ptr, false);
+    let method_name_opt = self.parser.consume_dyn(
+      |x| match x {
+        Identifier(y) => Some(y.clone()),
+        _ => None,
+      },
+      "Expect superclass method name.",
+    );
 
-    if self.token_is_a(&LeftParen) {
-      let arg_count = self.parse_args();
-      self.reference_named_variable(self.gc.super_str_gc_ptr, false);
-      self.emit_bytes(SuperInvoke, name_byte);
-      self.emit_byte(arg_count);
-    } else {
-      self.reference_named_variable(self.gc.super_str_gc_ptr, false);
-      self.emit_bytes(GetSuper, name_byte);
+    if method_name_opt.is_some() {
+      let name_byte = self.make_ident_constant();
+      self.reference_named_variable(self.gc.this_str_gc_ptr, false);
+
+      if self.token_is_a(&LeftParen) {
+        let arg_count = self.parse_args();
+        self.reference_named_variable(self.gc.super_str_gc_ptr, false);
+        self.emit_bytes(SuperInvoke, name_byte);
+        self.emit_byte(arg_count);
+      } else {
+        self.reference_named_variable(self.gc.super_str_gc_ptr, false);
+        self.emit_bytes(GetSuper, name_byte);
+      }
     }
   }
 
