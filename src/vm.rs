@@ -365,7 +365,7 @@ impl VM {
             push_and_win!(value)
           } else {
             let name = unsafe { &*name_ptr };
-            runtime_error!("Undefined variable '{:?}'.", name.chars)
+            runtime_error!("Undefined variable '{}'.", name.to_text())
           }
         },
         Some(GetLocal) => {
@@ -526,7 +526,7 @@ impl VM {
 
           if is_binding_new {
             self.compiler.gc.globals.delete(name_str_ptr);
-            runtime_error!("Undefined variable '{:?}'.", unsafe { &*name_str_ptr }.chars)
+            runtime_error!("Undefined variable '{}'.", unsafe { &*name_str_ptr }.to_text())
           } else {
             Continue
           }
