@@ -442,7 +442,7 @@ impl StringObj {
 
 impl Display for StringObj {
   fn fmt(&self, formatter: &mut Formatter<'_>) -> Result {
-    write!(formatter, "\"{}\"", self.to_text())
+    write!(formatter, "{}", self.to_text())
   }
 }
 
