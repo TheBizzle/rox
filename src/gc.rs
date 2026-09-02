@@ -21,7 +21,7 @@ pub const DEBUG_LOG_GC: bool = false;
 pub struct GcObject {
   pub next: *mut Self,
   pub object: HeapObject,
-  is_marked: bool,
+  pub(super) is_marked: bool,
 }
 
 impl GcObject {
@@ -240,8 +240,6 @@ impl Display for ClassObj {
 
 impl Freeable for ClassObj {
   fn free(&mut self) {
-    let name_heap_obj = &mut unsafe { &mut *self.name_gc_ptr }.object;
-    name_heap_obj.free();
     self.methods.free();
   }
 }
@@ -700,6 +698,8 @@ impl Gc {
   }
 
   pub fn sweep(&mut self) {
+    self.strings.delete_whites();
+
     let mut prev_opt = None;
     let mut current_ptr = self.objects;
 

@@ -93,6 +93,22 @@ impl HashTable {
     }
   }
 
+  pub fn delete_whites(&mut self) {
+    let slice = unsafe { from_raw_parts_mut(self.cells_ptr, self.capacity) };
+    for entry in slice {
+      if let Entry { key, .. } = entry {
+        let key_gc = unsafe { &**key };
+        let HeapString(key_str_ptr) = key_gc.object else {
+          panic!("Table key must be a string!");
+        };
+        let key_obj = unsafe { &*key_str_ptr };
+        if !key_gc.is_marked {
+          self.delete(key_obj);
+        }
+      }
+    }
+  }
+
   #[allow(clippy::option_option)]
   fn find_cell(&self, key_ptr: *const StringObj) -> *mut Cell {
     find_cell(self.cells_ptr, self.capacity, key_ptr)
