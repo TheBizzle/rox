@@ -757,6 +757,7 @@ pub fn objs_are_equal(a: &HeapObject, b: &HeapObject) -> bool {
   match (&a, &b) {
     (HeapString(ptr1), HeapString(ptr2)) => ptr1 == ptr2,
     (HeapClass(ptr1), HeapClass(ptr2)) => ptr1 == ptr2,
+    (HeapBoundMethod(ptr1), HeapBoundMethod(ptr2)) => ptr1 == ptr2,
     (_, _) => false,
   }
 }
