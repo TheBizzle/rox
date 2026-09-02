@@ -335,9 +335,7 @@ impl Display for FunctionObj {
         let HeapString(name_ptr) = unsafe { &**name_gc_ptr }.object else {
           panic!("Not possible for name pointer to be non-string");
         };
-        let name = unsafe { &*name_ptr };
-        let fn_name = name.chars;
-        write!(formatter, "<fn {fn_name:?}>")
+        write!(formatter, "<fn {}>", unsafe { &*name_ptr }.to_text())
       },
     }
   }
