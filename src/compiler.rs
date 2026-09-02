@@ -28,7 +28,7 @@ use crate::token::TokenType::{
 
 use crate::value::Value::{self, Double, Reference};
 
-const IS_DEBUGGING: bool = true;
+const IS_DEBUGGING: bool = false;
 
 struct JumpTarget(usize);
 

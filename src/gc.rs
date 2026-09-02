@@ -14,7 +14,7 @@ use crate::value::Value::{self, Nil, Reference};
 use crate::value::ValueArray;
 
 pub const DEBUG_STRESS_GC: bool = false;
-pub const DEBUG_LOG_GC: bool = true;
+pub const DEBUG_LOG_GC: bool = false;
 
 #[derive(Debug)]
 #[repr(C)]

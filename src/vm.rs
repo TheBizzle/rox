@@ -35,7 +35,7 @@ use crate::memory::Freeable;
 use crate::value::Value::{self, Boolean, Double, Nil as NilValue, Reference};
 
 const FRAMES_MAX: usize = 64;
-const IS_DEBUGGING: bool = true;
+const IS_DEBUGGING: bool = false;
 const STACK_MAX: usize = FRAMES_MAX * (u8::MAX as usize + 1);
 
 static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
