@@ -449,8 +449,8 @@ impl Compiler {
       "Expect class name.",
     ) {
       let class_name_gc_ptr = {
-        let loc = self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
-        self.gc.copy_string(&self.parser.source, loc.start_index as usize, loc.length as usize).1
+        let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
+        self.gc.copy_string(&self.parser.source, loc).1
       };
 
       let name_byte = self.make_ident_constant();
@@ -608,9 +608,7 @@ impl Compiler {
   fn parse_function(&mut self, function_kind: FunctionKind) {
     let function_obj = {
       let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
-      let start_index = prev_loc.start_index as usize;
-      let length = prev_loc.length as usize;
-      let (_, name_gc_ptr) = self.gc.copy_string(&self.parser.source, start_index, length);
+      let (_, name_gc_ptr) = self.gc.copy_string(&self.parser.source, prev_loc);
       UserDefined { arity: 0, chunk: Chunk::default(), name_gc_ptr, upvalue_count: 0 }
     };
 
@@ -805,10 +803,10 @@ impl Compiler {
   }
 
   fn parse_string(&mut self, _can_assign: bool) {
-    let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
-    let str_start = (prev_loc.start_index + 1) as usize;
-    let length = (prev_loc.length - 2) as usize;
-    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, str_start, length);
+    let mut fake_loc = self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
+    fake_loc.start_index += 1;
+    fake_loc.length -= 2;
+    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, &fake_loc);
     self.emit_constant(Reference(gc_ptr));
   }
 
@@ -982,7 +980,7 @@ impl Compiler {
 
   fn make_ident_constant(&mut self) -> u8 {
     let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
-    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, loc.start_index as usize, loc.length as usize);
+    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, loc);
     self.reference_ident_constant(gc_ptr)
   }
 
@@ -992,7 +990,7 @@ impl Compiler {
 
   fn make_named_variable(&mut self, can_assign: bool) {
     let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
-    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, loc.start_index as usize, loc.length as usize);
+    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, loc);
     self.reference_named_variable(gc_ptr, can_assign);
   }
 

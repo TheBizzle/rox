@@ -729,7 +729,7 @@ impl VM {
   }
 
   pub fn define_native_fn(&mut self, name: &str, native_fn: NativeFnObj) {
-    let (_, name_gc_ptr) = self.compiler.gc.copy_string(name, 0, name.len());
+    let (_, name_gc_ptr) = self.compiler.gc.copy_string_simple(name, name.len());
     let native_fn_gc_ptr = self.compiler.gc.allocate_native_fn(native_fn);
 
     let name_value = Reference(name_gc_ptr);

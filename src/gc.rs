@@ -10,6 +10,8 @@ use crate::hash_table::HashTable;
 
 use crate::memory::{Freeable, free_array};
 
+use crate::token::SourceLoc;
+
 use crate::value::Value::{self, Nil, Reference};
 use crate::value::ValueArray;
 
@@ -512,13 +514,13 @@ impl Gc {
     };
 
     let init_name = "init";
-    this.init_str_gc_ptr = this.copy_string(init_name, 0, init_name.len()).1;
+    this.init_str_gc_ptr = this.copy_string_simple(init_name, init_name.len()).1;
 
     let this_name = "this";
-    this.this_str_gc_ptr = this.copy_string(this_name, 0, this_name.len()).1;
+    this.this_str_gc_ptr = this.copy_string_simple(this_name, this_name.len()).1;
 
     let super_name = "super";
-    this.super_str_gc_ptr = this.copy_string(super_name, 0, super_name.len()).1;
+    this.super_str_gc_ptr = this.copy_string_simple(super_name, super_name.len()).1;
 
     this
   }
@@ -629,8 +631,11 @@ impl Gc {
     }
   }
 
-  pub fn copy_string(&mut self, str: &str, start_index: usize, length: usize) -> (StrPtr, GcPtr) {
-    let substring = &str[start_index..(start_index + length)];
+  pub fn copy_string(&mut self, str: &str, loc: &SourceLoc) -> (StrPtr, GcPtr) {
+    self.copy_string_simple(&loc.extract(str), loc.length as usize)
+  }
+
+  pub fn copy_string_simple(&mut self, substring: &str, length: usize) -> (StrPtr, GcPtr) {
     let hash = hash_string(substring.as_ptr(), length);
     #[allow(clippy::option_if_let_else)]
     if let Some(ptr_pair) = self.find_string(substring.as_ptr(), length, hash) {

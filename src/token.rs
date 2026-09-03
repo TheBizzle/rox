@@ -15,8 +15,7 @@ pub struct SourceLoc {
 
 impl SourceLoc {
   pub fn extract(&self, source: &str) -> String {
-    let range = (self.start_index as usize)..((self.start_index + self.length) as usize);
-    source.to_string()[range].to_string()
+    source.chars().skip(self.start_index as usize).take(self.length as usize).collect::<String>()
   }
 }
 
