@@ -54,11 +54,15 @@ impl Lexer {
     })
   }
 
-  const fn make_token(&self, typ: TokenType) -> Token {
+  fn make_token(&self, typ: TokenType) -> Token {
     let start_index = self.pos_prior;
     let line_num = self.line_num;
     let column = self.pos_prior - self.last_newline_pos + 1;
-    let length = self.pos - self.pos_prior;
+    let length = if let LoxString(ref s) = typ {
+      u32::try_from(s.len()).unwrap() + 2
+    } else {
+      self.pos - self.pos_prior
+    };
     Token { typ, loc: SourceLoc { start_index, line_num, column, length } }
   }
 
