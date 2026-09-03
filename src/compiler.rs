@@ -754,9 +754,10 @@ impl Compiler {
         if let Some(infix_rule) = rule_for(&self.parser.previous_token_opt.as_ref().unwrap().typ).infix {
           infix_rule(self, can_assign);
         }
-        if can_assign && self.token_is_a(&Equal) {
-          self.parser.error("Invalid assignment target.");
-        }
+      }
+
+      if can_assign && self.token_is_a(&Equal) {
+        self.parser.error("Invalid assignment target.");
       }
     } else {
       self.parser.error("Expect expression.");
