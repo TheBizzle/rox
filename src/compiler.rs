@@ -751,9 +751,10 @@ impl Compiler {
 
       while p <= &rule_for(&self.parser.current_token_opt.as_ref().unwrap().typ).precedence {
         self.parser.advance();
-        if let Some(infix_rule) = rule_for(&self.parser.previous_token_opt.as_ref().unwrap().typ).infix {
-          infix_rule(self, can_assign);
-        }
+        let Some(infix_rule) = rule_for(&self.parser.previous_token_opt.as_ref().unwrap().typ).infix else {
+          panic!("Impossible missing infix rule");
+        };
+        infix_rule(self, can_assign);
       }
 
       if can_assign && self.token_is_a(&Equal) {
