@@ -1,3 +1,5 @@
+use crate::error::LexerError::{UnexpectedToken, UnterminatedString};
+
 use crate::lexer::Lexer;
 
 use crate::token::Token;
@@ -34,10 +36,12 @@ impl Parser {
           self.current_token_opt = Some(token);
           break;
         },
-        Err(_error) => {
-          // TODO: I don't think this is right...
-          let message = self.current_token_opt.as_ref().unwrap().loc.extract(&self.source);
-          self.error_at_current(&message);
+        Err(error) => {
+          let message = match error {
+            UnexpectedToken => "Unexpected character.",
+            UnterminatedString => "Unterminated string.",
+          };
+          self.error_at(None, message);
         },
       }
     }
@@ -62,31 +66,36 @@ impl Parser {
   }
 
   pub fn error_at_current(&mut self, message: &str) {
-    self.error_at(&self.current_token_opt.clone().unwrap(), message);
+    self.error_at(self.current_token_opt.clone().as_ref(), message);
   }
 
   pub fn error(&mut self, message: &str) {
-    self.error_at(&self.previous_token_opt.clone().unwrap(), message);
+    self.error_at(self.previous_token_opt.clone().as_ref(), message);
   }
 
-  fn error_at(&mut self, token: &Token, message: &str) {
+  fn error_at(&mut self, token_opt: Option<&Token>, message: &str) {
     if self.is_panicking {
       return;
     }
 
-    let Token { loc, typ } = token;
-
     self.is_panicking = true;
-    eprint!("[line {}] Error", loc.line_num);
 
-    match typ {
-      Eof => {
-        eprint!(" at end");
-      },
-      // TODO: And handle (i.e. do nothing) when "error token" was "emitted"
-      _ => {
-        eprint!(" at '{}'", loc.extract(&self.source));
-      },
+    let line_num = if let Some(Token { loc, .. }) = token_opt.or(self.previous_token_opt.as_ref()) {
+      loc.line_num
+    } else {
+      self.lexer.line_num
+    };
+    eprint!("[line {line_num}] Error");
+
+    if let Some(Token { loc, typ }) = token_opt {
+      match typ {
+        Eof => {
+          eprint!(" at end");
+        },
+        _ => {
+          eprint!(" at '{}'", loc.extract(&self.source));
+        },
+      }
     }
 
     eprintln!(": {message}");

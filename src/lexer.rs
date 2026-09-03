@@ -14,7 +14,7 @@ pub struct Lexer {
   pos: u32,
   pos_prior: u32,
   last_newline_pos: u32,
-  line_num: u32,
+  pub(super) line_num: u32,
 }
 
 impl Lexer {
