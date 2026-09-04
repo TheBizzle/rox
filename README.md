@@ -5,9 +5,9 @@ rox
 
 https://craftinginterpreters.com/
 
-This is a Rust-based implementation of `clox` (from the second half of the book, where you build a bytecode VM in C), and aims to become fully compliant with the `clox` suite of tests.
+This is a Rust-based implementation of `clox` (from the second half of the book, where you build a bytecode VM in C), and is fully compliant with the `clox` suite of tests.
 
-For `jlox` (from the first half of the book, where you build an interpreter in Java), see [here](https://github.com/TheBizzle/Lox).
+For `jlox` (from the first half of the book, where you build an interpreter in Java), see my Haskell-based implementation [here](https://github.com/TheBizzle/Lox).
 
 [![rox CI](https://github.com/TheBizzle/rox/actions/workflows/rox.yaml/badge.svg)](https://github.com/TheBizzle/rox/actions/workflows/rox.yaml)
 
