@@ -22,8 +22,37 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run tests
+      - name: Cache Dart SDK
+        id: cache-dart
+        uses: actions/cache@v5
+        with:
+          path: ~/dart
+          key: ${{ runner.os }}-dart-2.19.6
+
+      - name: Install Dart 2.x (if not cached)
+        if: steps.cache-dart.outputs.cache-hit != 'true'
+        run: |
+          wget https://storage.googleapis.com/dart-archive/channels/stable/release/2.19.6/sdk/dartsdk-linux-x64-release.zip
+          unzip dartsdk-linux-x64-release.zip -d $HOME/dart
+
+      - name: Add Dart to PATH
+        run: echo "$HOME/dart/dart-sdk/bin" >> $GITHUB_PATH
+
+      - name: Verify Dart installation
+        run: dart --version
+
+      - name: Run Rust-based tests
         run: cargo test --all-targets
+
+      - name: Build tester
+        run: |
+          cd mothership
+          make get
+
+      - name: Run tests
+        run: |
+          chmod +x test.sh
+          ./test.sh 1
 
   lint:
     name: Lint
