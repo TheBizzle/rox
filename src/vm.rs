@@ -289,6 +289,8 @@ impl VM {
               if let GcObject { object: HeapString(str1), .. } = unsafe { &*x }
                 && let GcObject { object: HeapString(str2), .. } = unsafe { &*y } =>
             {
+              let _ = self.pop();
+              let _ = self.pop();
               push_and_win!(Reference(self.compiler.gc.concatenate_strings(*str1, *str2).1))
             },
             _ => runtime_error!("Operands must be two numbers or two strings."),
