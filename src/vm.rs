@@ -78,6 +78,7 @@ pub struct VM {
   current_frame_index: usize,
   frames: [CallFrame; FRAMES_MAX],
   instrs_since_last_gc: u16,
+  native_fns: Vec<(*mut GcObject, *mut GcObject)>,
   _stack: Box<[Value; STACK_MAX]>,
   stack_addr: *mut Value,
   stack_top: *mut Value,
@@ -104,6 +105,7 @@ impl VM {
       current_frame_index: 0,
       frames,
       instrs_since_last_gc: 0,
+      native_fns: Vec::new(),
       _stack: Box::new(stack),
       stack_addr,
       stack_top,
@@ -736,15 +738,9 @@ impl VM {
     let (_, name_gc_ptr) = self.compiler.gc.copy_string_simple(name, name.len());
     let native_fn_gc_ptr = self.compiler.gc.allocate_native_fn(native_fn);
 
-    let name_value = Reference(name_gc_ptr);
-    let native_fn_value = Reference(native_fn_gc_ptr);
-    self.push(name_value);
-    self.push(native_fn_value.clone());
+    self.native_fns.push((name_gc_ptr, native_fn_gc_ptr));
 
-    self.compiler.gc.globals.set(name_gc_ptr, native_fn_value);
-
-    self.pop();
-    self.pop();
+    self.compiler.gc.globals.set(name_gc_ptr, Reference(native_fn_gc_ptr));
   }
 
   fn runtime_error_impl(&mut self, args: Arguments) {
@@ -794,6 +790,14 @@ impl VM {
       let upvalue = unsafe { &*upvalue_ptr };
       self.compiler.gc.mark_object(upvalue_gc);
       upvalue_opt = upvalue.next_gc_opt;
+    }
+
+    for (name_gc_ptr, fn_gc_ptr) in &self.native_fns {
+      let name_gc = unsafe { &mut **name_gc_ptr };
+      self.compiler.gc.mark_object(name_gc);
+
+      let fn_gc = unsafe { &mut **fn_gc_ptr };
+      self.compiler.gc.mark_object(fn_gc);
     }
 
     self.compiler.gc.mark_tables();
