@@ -144,9 +144,13 @@ impl VM {
     self
   }
 
+  #[must_use]
+  pub fn interpret(source: String) -> Interpretation {
+    Self::init().interpret_partial(source)
+  }
+
   #[allow(clippy::option_if_let_else)]
-  pub fn interpret(&mut self, source: String) -> Interpretation {
-    self.compiler = Compiler::default();
+  pub fn interpret_partial(&mut self, source: String) -> Interpretation {
     if let Some((_, function_gc_ptr)) = self.compiler.run(source) {
       self.push(Reference(function_gc_ptr));
 

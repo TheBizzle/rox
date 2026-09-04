@@ -10,23 +10,20 @@ use rox::vm::VM;
 async fn main() {
   let args: Vec<String> = env::args().collect();
 
-  let mut vm = VM::init();
-
   match &args[..] {
-    [_] => run_repl(&mut vm),
-    [_, filepath] => run_file(&mut vm, filepath),
+    [_] => run_repl(),
+    [_, filepath] => run_file(filepath),
     _ => {
       eprintln!("Usage: rox [path]");
       exit(64)
     },
   }
 
-  let _ = vm.free();
-
   exit(0);
 }
 
-fn run_repl(vm: &mut VM) {
+fn run_repl() {
+  let mut vm = VM::init();
   let mut input = String::with_capacity(1024);
   let stdin = stdin();
   let mut stdout = stdout();
@@ -44,20 +41,20 @@ fn run_repl(vm: &mut VM) {
         exit(0);
       },
       Ok(_) => {
-        vm.interpret(input.clone());
+        vm.interpret_partial(input.clone());
       },
     }
   }
 }
 
-fn run_file(vm: &mut VM, filepath: &str) {
+fn run_file(filepath: &str) {
   match read_to_string(filepath) {
     Err(_) => {
       eprintln!("Could not read file \"{filepath}\".");
       exit(74);
     },
     Ok(source) => {
-      let result = vm.interpret(source);
+      let result = VM::interpret(source);
 
       match result {
         CompilationError => exit(65),
