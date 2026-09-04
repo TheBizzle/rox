@@ -720,7 +720,8 @@ impl VM {
     {
       upvalue_gc_ptr
     } else {
-      let upvalue_obj = UpvalueObj { closed_value: NilValue, next_gc_opt: None, value_ptr: target_value_ptr };
+      let upvalue_obj =
+        UpvalueObj { closed_value: NilValue, next_gc_opt: upvalue_opt, value_ptr: target_value_ptr };
       let (_, allocated_gc_ptr) = self.compiler.gc.allocate_upvalue(upvalue_obj);
 
       if let Some(prev_upvalue_gc_ptr) = prev_upvalue_opt
