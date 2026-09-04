@@ -158,17 +158,17 @@ struct Program {
   function_gc_ptr: *mut GcObject,
   function_kind: FunctionKind,
 
-  local_var_opts: Box<[Option<LocalVar>; u8::MAX as usize]>,
-  local_var_count: u8,
+  local_var_opts: Box<[Option<LocalVar>; u8::MAX as usize + 1]>,
+  local_var_count: u16,
   scope_depth: u8,
 
-  upvalues: [Option<Upvalue>; u8::MAX as usize],
+  upvalues: [Option<Upvalue>; u8::MAX as usize + 1],
 }
 
 impl Program {
   #[must_use]
   pub fn new(function_gc_ptr: *mut GcObject, function_kind: FunctionKind) -> Self {
-    let size = u8::MAX as usize;
+    let size = u8::MAX as usize + 1;
     let mut v = Vec::with_capacity(size);
     v.resize_with(size, || None);
 
@@ -181,11 +181,11 @@ impl Program {
 
     v[0] = Some(first_binding);
 
-    let local_var_opts = v.try_into().expect("Length must be exactly `u8::MAX`");
+    let local_var_opts = v.try_into().expect("Length must be exactly `u8::MAX + 1`");
 
     let mut v2 = Vec::with_capacity(size);
     v2.resize_with(size, || None);
-    let upvalues = v2.try_into().expect("Length must be exactly `u8::MAX`");
+    let upvalues = v2.try_into().expect("Length must be exactly `u8::MAX + 1`");
 
     Self {
       function_gc_ptr,
@@ -366,7 +366,13 @@ impl Compiler {
   }
 
   fn make_constant(&mut self, value: Value) -> u8 {
-    self.program().chunk().add_constant(value)
+    let chunk = self.program().chunk();
+    if chunk.constants.count > u16::from(u8::MAX) {
+      self.parser.error("Too many constants in one chunk.");
+      0
+    } else {
+      chunk.add_constant(value)
+    }
   }
 
   fn parse_and(&mut self, _can_assign: bool) {
@@ -928,7 +934,7 @@ impl Compiler {
   }
 
   fn add_local(&mut self, name: String, token: Token) {
-    if self.program().local_var_count == u8::MAX {
+    if self.program().local_var_count > u16::from(u8::MAX) {
       self.parser.error("Too many local variables in function.");
     } else {
       let local = LocalBinding { name, token, depth_opt: None, is_captured: false };
@@ -1020,7 +1026,7 @@ impl Compiler {
 
   fn register_upvalue(&mut self, pindex: usize, index: u8, is_local: bool) -> Option<u8> {
     let upvalue_count = self.program_at(pindex).function().upvalue_count();
-    if upvalue_count == u8::MAX {
+    if upvalue_count > u16::from(u8::MAX) {
       self.parser.error("Too many closure variables in function.");
       None
     } else {
@@ -1031,7 +1037,7 @@ impl Compiler {
         || {
           self.program_at(pindex).upvalues[upvalue_index] = target_uv_opt;
           self.program_at(pindex).function().increment_upvalue_count();
-          Some(upvalue_count)
+          Some(u8::try_from(upvalue_count).unwrap())
         },
       )
     }
@@ -1046,7 +1052,7 @@ impl Compiler {
         if depth_opt.is_none() {
           self.parser.error("Can't read local variable in its own initializer.");
         } else {
-          return Some(i);
+          return Some(u8::try_from(i).unwrap());
         }
       }
     }

@@ -251,7 +251,7 @@ impl Freeable for ClassObj {
 pub struct ClosureObj {
   pub function_gc_ptr: *mut GcObject,       // *FunctionObj
   pub upvalues_ptr_ptr: *mut *mut GcObject, // **UpvalueObj
-  pub upvalue_count: u8,
+  pub upvalue_count: u16,
 }
 
 impl ClosureObj {
@@ -282,8 +282,8 @@ impl Freeable for ClosureObj {
 #[derive(Eq, PartialEq)]
 #[repr(C)]
 pub enum FunctionObj {
-  MainScript { arity: u32, chunk: Chunk, upvalue_count: u8 },
-  UserDefined { arity: u32, chunk: Chunk, name_gc_ptr: *mut GcObject, upvalue_count: u8 },
+  MainScript { arity: u32, chunk: Chunk, upvalue_count: u16 },
+  UserDefined { arity: u32, chunk: Chunk, name_gc_ptr: *mut GcObject, upvalue_count: u16 },
 }
 use FunctionObj::{MainScript, UserDefined};
 
@@ -314,7 +314,7 @@ impl FunctionObj {
     }
   }
 
-  pub const fn upvalue_count(&self) -> u8 {
+  pub const fn upvalue_count(&self) -> u16 {
     match self {
       MainScript { upvalue_count, .. } | UserDefined { upvalue_count, .. } => *upvalue_count,
     }

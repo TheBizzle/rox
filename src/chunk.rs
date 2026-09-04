@@ -24,9 +24,12 @@ impl Chunk {
     }
   }
 
+  /// # Panics
+  ///
+  /// When there are more than `u8::MAX` constants
   pub fn add_constant(&mut self, value: Value) -> u8 {
     self.constants.write(value);
-    self.constants.count - 1
+    u8::try_from(self.constants.count - 1).unwrap()
   }
 
   #[must_use]

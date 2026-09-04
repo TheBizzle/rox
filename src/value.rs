@@ -41,8 +41,8 @@ impl Value {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ValueArray {
-  pub count: u8,
-  capacity: u8,
+  pub count: u16,
+  capacity: u16,
   pub values: *mut Value,
 }
 
