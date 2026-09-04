@@ -460,30 +460,34 @@ impl Compiler {
       self.define_variable(name_byte);
       self.class_contexts.push(ClassContext { has_superclass: false });
 
-      if self.token_is_a(&Less)
-        && let Some(superclass_name) = self.parser.consume_dyn(
+      if self.token_is_a(&Less) {
+        if let Some(superclass_name) = self.parser.consume_dyn(
           |x| match x {
             Identifier(y) => Some(y.clone()),
             _ => None,
           },
           "Expect superclass name.",
-        )
-      {
-        self.make_named_variable(false); // Load superclass
+        ) {
+          self.make_named_variable(false); // Load superclass
 
-        if class_name == superclass_name {
-          self.parser.error("A class can't inherit from itself.");
+          if class_name == superclass_name {
+            self.parser.error("A class can't inherit from itself.");
+          }
+
+          self.program().begin_scope();
+          let (st_name, st_token) = synthesize_token(Super);
+          self.add_local(st_name, st_token);
+          self.define_variable(0);
+
+          self.reference_named_variable(class_name_gc_ptr, false); // Load subclass
+
+          self.emit_byte(Inherit);
+          self.class_contexts.last_mut().unwrap().has_superclass = true;
+        } else {
+          while !matches!(self.parser.current_token_opt.as_ref().unwrap().typ, LeftBrace) {
+            self.parser.advance();
+          }
         }
-
-        self.program().begin_scope();
-        let (st_name, st_token) = synthesize_token(Super);
-        self.add_local(st_name, st_token);
-        self.define_variable(0);
-
-        self.reference_named_variable(class_name_gc_ptr, false); // Load subclass
-
-        self.emit_byte(Inherit);
-        self.class_contexts.last_mut().unwrap().has_superclass = true;
       }
 
       self.reference_named_variable(class_name_gc_ptr, false);
