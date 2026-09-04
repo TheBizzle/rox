@@ -711,23 +711,19 @@ impl Compiler {
   }
 
   fn parse_method(&mut self) {
-    let name = self
-      .parser
-      .consume_dyn(
-        |x| match x {
-          Identifier(y) => Some(y.clone()),
-          _ => None,
-        },
-        "Expect method name.",
-      )
-      .unwrap(); // TODO: Avoid `unwrap` here without causing
-    // `inheritance/parenthesized_superclass` to hang
+    if let Some(name) = self.parser.consume_dyn(
+      |x| match x {
+        Identifier(y) => Some(y.clone()),
+        _ => None,
+      },
+      "Expect method name.",
+    ) {
+      let function_kind = if name == "init" { Initializer } else { Method };
 
-    let function_kind = if name == "init" { Initializer } else { Method };
-
-    let name_byte = self.make_ident_constant();
-    self.parse_function(function_kind);
-    self.emit_bytes(MethodCode, name_byte);
+      let name_byte = self.make_ident_constant();
+      self.parse_function(function_kind);
+      self.emit_bytes(MethodCode, name_byte);
+    }
   }
 
   fn parse_number(&mut self, _can_assign: bool) {
