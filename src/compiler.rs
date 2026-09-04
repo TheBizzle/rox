@@ -634,7 +634,7 @@ impl Compiler {
       loop {
         arity += 1;
         if arity > 255 {
-          self.parser.error("Can't have more than 255 parameters.");
+          self.parser.error_at_current("Can't have more than 255 parameters.");
         }
 
         let constant = self.parse_variable("Expect parameter name.");
