@@ -18,7 +18,6 @@ use crate::gc::FunctionObj::{self, MainScript, UserDefined};
 use crate::gc::HeapObject::{HeapFunction, HeapString};
 use crate::gc::{Gc, GcObject};
 
-use crate::token::SourceLoc;
 use crate::token::Token;
 use crate::token::TokenType::{
   self, And, Bang, BangEqual, Class, Comma, Dot, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
@@ -103,10 +102,9 @@ fn rule_for(typ: &TokenType) -> ParseRule {
 }
 
 #[derive(Debug)]
-#[allow(unused)] // TODO
 enum LocalVar {
   GlobalFunction,
-  LocalBinding { name: String, token: Token, depth_opt: Option<u8>, is_captured: bool },
+  LocalBinding { name: String, depth_opt: Option<u8>, is_captured: bool },
 }
 use LocalVar::{GlobalFunction, LocalBinding};
 
@@ -173,8 +171,7 @@ impl Program {
     v.resize_with(size, || None);
 
     let first_binding = if function_kind == Method || function_kind == Initializer {
-      let (name, token) = synthesize_token(This);
-      LocalBinding { name, token, depth_opt: Some(0), is_captured: false }
+      LocalBinding { name: name_of(This), depth_opt: Some(0), is_captured: false }
     } else {
       GlobalFunction
     };
@@ -481,8 +478,7 @@ impl Compiler {
           }
 
           self.program().begin_scope();
-          let (st_name, st_token) = synthesize_token(Super);
-          self.add_local(st_name, st_token);
+          self.add_local(name_of(Super));
           self.define_variable(0);
 
           self.reference_named_variable(class_name_gc_ptr, false); // Load subclass
@@ -933,11 +929,11 @@ impl Compiler {
     self.emit_byte(Pop);
   }
 
-  fn add_local(&mut self, name: String, token: Token) {
+  fn add_local(&mut self, name: String) {
     if self.program().local_var_count > u16::from(u8::MAX) {
       self.parser.error("Too many local variables in function.");
     } else {
-      let local = LocalBinding { name, token, depth_opt: None, is_captured: false };
+      let local = LocalBinding { name, depth_opt: None, is_captured: false };
       let index = self.program().local_var_count as usize;
       self.program().local_var_opts[index] = Some(local);
       self.program().local_var_count += 1;
@@ -959,8 +955,7 @@ impl Compiler {
           }
         }
       }
-      let token = self.parser.previous_token_opt.clone().unwrap();
-      self.add_local(new_var_name, token);
+      self.add_local(new_var_name);
     }
   }
 
@@ -1098,16 +1093,11 @@ impl Compiler {
   }
 }
 
-fn synthesize_token(typ: TokenType) -> (String, Token) {
-  let name = match typ {
+fn name_of(typ: TokenType) -> String {
+  match typ {
     This => "this",
     Super => "super",
-    x => panic!("It is illegal to synthesize a token for: {x:?}"),
-  };
-
-  let length = u32::try_from(name.len()).unwrap();
-  let loc = SourceLoc { start_index: 0, line_num: 0, column: 0, length };
-  let token = Token { loc, typ };
-
-  (name.to_string(), token)
+    x => panic!("The function only supports `This` and `Super`, not: {x:?}"),
+  }
+  .to_string()
 }
