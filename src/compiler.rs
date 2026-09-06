@@ -262,12 +262,12 @@ impl Compiler {
 
 impl Default for Compiler {
   fn default() -> Self {
-    let parser = Parser::new(String::new());
-    let mut gc = Gc::new();
-    let function_obj = MainScript { arity: 0, chunk: Chunk::default(), upvalue_count: 0 };
-    let programs = vec![Program::new(gc.allocate_function(function_obj), Script)];
-
-    Self { class_contexts: Vec::new(), parser, programs, gc }
+    Self {
+      class_contexts: Vec::new(),
+      parser: Parser::new(String::new()),
+      programs: Vec::new(),
+      gc: Gc::new(),
+    }
   }
 }
 
@@ -280,8 +280,10 @@ impl Compiler {
   }
 
   pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {
-    self.parser = Parser::new(source);
+    let script = MainScript { arity: 0, chunk: Chunk::default(), upvalue_count: 0 };
+    self.programs = vec![Program::new(self.gc.allocate_function(script), Script)];
 
+    self.parser = Parser::new(source);
     self.parser.advance();
 
     while !self.token_is_a(&Eof) {
