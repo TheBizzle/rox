@@ -803,8 +803,8 @@ impl VM {
       self.compiler.gc.mark_object(fn_gc);
     }
 
-    self.compiler.gc.mark_tables();
     self.compiler.mark_roots();
+    self.compiler.gc.mark_roots();
   }
 
   fn bind_method(&mut self, class: &ClassObj, key_ptr: *const StringObj) -> Option<*mut GcObject> {

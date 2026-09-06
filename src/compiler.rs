@@ -277,12 +277,6 @@ impl Compiler {
       let function_gc = unsafe { &mut *program.function_gc_ptr };
       self.gc.mark_object(function_gc);
     }
-
-    // TODO: Just let the GC worry about this
-    for gc_ptr in [self.gc.init_str_gc_ptr, self.gc.super_str_gc_ptr, self.gc.this_str_gc_ptr] {
-      let str_gc = unsafe { &mut *gc_ptr };
-      self.gc.mark_object(str_gc);
-    }
   }
 
   pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {

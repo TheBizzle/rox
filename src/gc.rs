@@ -677,6 +677,15 @@ impl Gc {
     }
   }
 
+  pub fn mark_roots(&mut self) {
+    self.mark_tables();
+
+    for gc_ptr in [self.init_str_gc_ptr, self.super_str_gc_ptr, self.this_str_gc_ptr] {
+      let str_gc = unsafe { &mut *gc_ptr };
+      self.mark_object(str_gc);
+    }
+  }
+
   fn mark_table_pairs(&mut self, pairs: Vec<(*mut GcObject, *mut Value)>) {
     for (key_ptr, value_ptr) in pairs {
       self.mark_object(unsafe { &mut *key_ptr });
@@ -689,7 +698,7 @@ impl Gc {
     self.mark_table_pairs(pairs);
   }
 
-  pub fn mark_tables(&mut self) {
+  fn mark_tables(&mut self) {
     let pairs = self.globals.iter_mut().map(|(k, v)| (ptr::from_mut(k), ptr::from_mut(v))).collect();
     self.mark_table_pairs(pairs);
   }
