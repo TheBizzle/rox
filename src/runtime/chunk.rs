@@ -1,7 +1,9 @@
 use std::ptr::null_mut;
 
-use crate::memory::{free_array, grow_array, next_capacity};
-use crate::value::{Value, ValueArray};
+use crate::core::memory::{free_array, grow_array, next_capacity};
+
+use super::value::Value;
+use super::value_array::ValueArray;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Chunk {

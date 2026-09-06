@@ -3,8 +3,8 @@ use std::fs::read_to_string;
 use std::io::{Write, stdin, stdout};
 use std::process::exit;
 
-use rox::vm::Interpretation::{CompilationError, RuntimeError, Success};
 use rox::vm::VM;
+use rox::vm::interpretation::Interpretation::{CompilationError, RuntimeError, Success};
 
 #[tokio::main]
 async fn main() {

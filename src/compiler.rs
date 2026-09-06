@@ -1,253 +1,56 @@
-use strum::FromRepr;
+use crate::runtime::chunk::Chunk;
 
-use crate::chunk::Chunk;
+use crate::parser::Parser;
 
-use crate::disassembler::disassemble_chunk;
+use crate::runtime::gc_object::GcObject;
+use crate::runtime::heap::Heap;
+use crate::runtime::heap_object::FunctionObj::{self, MainScript, UserDefined};
+use crate::runtime::heap_object::HeapObject::HeapString;
 
-use crate::opcode::OpCode::{
-  self, Add, Class as ClassCode, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal as EqualCode,
+use crate::parser::token::Token;
+use crate::parser::token::TokenType::{
+  self, Bang, BangEqual, Class, Comma, Dot, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
+  GreaterEqual, Identifier, If, LeftBrace, LeftParen, Less, LessEqual, Minus, Nil, Number, Plus, Print,
+  Return, RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
+};
+
+use crate::runtime::value::Value::{self, Double, Reference};
+
+pub mod disassembler;
+pub mod function_kind;
+pub mod opcode;
+pub mod program;
+
+mod precedence;
+
+use disassembler::disassemble_chunk;
+
+use opcode::OpCode::{
+  self, Add, Class as ClassCode, Closure, Constant, DefineGlobal, Divide, Equal as EqualCode,
   False as FalseCode, FnCall, GetGlobal, GetLocal, GetProperty, GetSuper, GetUpvalue, Greater as GreaterCode,
   Inherit, Invoke, Jump, JumpIfFalse, Less as LessCode, Loop, Method as MethodCode, Multiply, Negate,
   Nil as NilCode, Not, Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, SetProperty,
   SetUpvalue, Subtract, SuperInvoke, True as TrueCode,
 };
 
-use crate::parser::Parser;
+use precedence::{Precedence, rule_for};
 
-use crate::gc::FunctionObj::{self, MainScript, UserDefined};
-use crate::gc::HeapObject::{HeapFunction, HeapString};
-use crate::gc::{Gc, GcObject};
-
-use crate::token::Token;
-use crate::token::TokenType::{
-  self, And, Bang, BangEqual, Class, Comma, Dot, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
-  GreaterEqual, Identifier, If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Or,
-  Plus, Print, Return, RightBrace, RightParen, Semicolon, Slash, Star, Super, This, True, Var, While,
-};
-
-use crate::value::Value::{self, Double, Reference};
+use function_kind::FunctionKind::{self, Function, Initializer, Method, Script};
+use program::{LocalVar::LocalBinding, Program, Upvalue};
 
 const IS_DEBUGGING: bool = false;
 
 struct JumpTarget(usize);
 
-#[derive(FromRepr, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(u8)]
-enum Precedence {
-  Bupkis,
-  Assignment, // =
-  Or,         // or
-  And,        // and
-  Equality,   // == !=
-  Comparison, // < > <= >=
-  Term,       // + -
-  Factor,     // * /
-  Unary,      // ! -
-  Call,       // . ()
-  Primary,
-}
-
-impl Precedence {
-  pub const fn next(self) -> Self {
-    Self::from_repr((self as u8) + 1).unwrap()
-  }
-}
-
-type ParseFn = fn(&mut Compiler, bool);
-
-struct ParseRule {
-  prefix: Option<ParseFn>,
-  infix: Option<ParseFn>,
-  precedence: Precedence,
-}
-
-fn rule_for(typ: &TokenType) -> ParseRule {
-  let (prefix, infix, precedence): (Option<ParseFn>, Option<ParseFn>, Precedence) = match typ {
-    Dot => (None, Some(Compiler::parse_dot), Precedence::Call),
-
-    LeftParen => (Some(Compiler::parse_grouping), Some(Compiler::parse_function_call), Precedence::Call),
-
-    Slash | Star => (None, Some(Compiler::parse_binary), Precedence::Factor),
-
-    Minus => (Some(Compiler::parse_unary), Some(Compiler::parse_binary), Precedence::Term),
-
-    Plus => (None, Some(Compiler::parse_binary), Precedence::Term),
-
-    Greater | GreaterEqual | Less | LessEqual => (None, Some(Compiler::parse_binary), Precedence::Comparison),
-
-    BangEqual | EqualEqual => (None, Some(Compiler::parse_binary), Precedence::Equality),
-
-    And => (None, Some(Compiler::parse_and), Precedence::And),
-
-    Or => (None, Some(Compiler::parse_or), Precedence::Or),
-
-    Number(_) => (Some(Compiler::parse_number), None, Precedence::Bupkis),
-
-    LoxString(_) => (Some(Compiler::parse_string), None, Precedence::Bupkis),
-
-    Bang => (Some(Compiler::parse_unary), None, Precedence::Bupkis),
-
-    False | Nil | True => (Some(Compiler::parse_literal), None, Precedence::Bupkis),
-
-    Identifier(_) => (Some(Compiler::parse_var_reference), None, Precedence::Bupkis),
-
-    This => (Some(Compiler::parse_this), None, Precedence::Bupkis),
-
-    Super => (Some(Compiler::parse_super), None, Precedence::Bupkis),
-
-    _ => (None, None, Precedence::Bupkis),
-  };
-
-  ParseRule { prefix, infix, precedence }
-}
-
-#[derive(Debug)]
-enum LocalVar {
-  GlobalFunction,
-  LocalBinding { name: String, depth_opt: Option<u8>, is_captured: bool },
-}
-use LocalVar::{GlobalFunction, LocalBinding};
-
-impl LocalVar {
-  const fn depth_opt(&self) -> Option<&u8> {
-    match self {
-      GlobalFunction => None,
-      LocalBinding { depth_opt, .. } => depth_opt.as_ref(),
-    }
-  }
-
-  const fn is_captured(&self) -> bool {
-    match self {
-      GlobalFunction => false,
-      LocalBinding { is_captured, .. } => *is_captured,
-    }
-  }
-
-  const fn mark_captured(&mut self) {
-    match self {
-      GlobalFunction => {},
-      LocalBinding { is_captured, .. } => {
-        *is_captured = true;
-      },
-    }
-  }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum FunctionKind {
-  Function,
-  Initializer,
-  Method,
-  Script,
-}
-use FunctionKind::{Function, Initializer, Method, Script};
-
-#[derive(Debug, Eq, PartialEq)]
-struct Upvalue {
-  index: u8,
-  is_local: bool,
-}
-
 struct ClassContext {
   has_superclass: bool,
-}
-
-struct Program {
-  function_gc_ptr: *mut GcObject,
-  function_kind: FunctionKind,
-
-  local_var_opts: Box<[Option<LocalVar>; u8::MAX as usize + 1]>,
-  local_var_count: u16,
-  scope_depth: u8,
-
-  upvalues: [Option<Upvalue>; u8::MAX as usize + 1],
-}
-
-impl Program {
-  #[must_use]
-  pub fn new(function_gc_ptr: *mut GcObject, function_kind: FunctionKind) -> Self {
-    let size = u8::MAX as usize + 1;
-    let mut v = Vec::with_capacity(size);
-    v.resize_with(size, || None);
-
-    let first_binding = if function_kind == Method || function_kind == Initializer {
-      LocalBinding { name: name_of(This), depth_opt: Some(0), is_captured: false }
-    } else {
-      GlobalFunction
-    };
-
-    v[0] = Some(first_binding);
-
-    let local_var_opts = v.try_into().expect("Length must be exactly `u8::MAX + 1`");
-
-    let mut v2 = Vec::with_capacity(size);
-    v2.resize_with(size, || None);
-    let upvalues = v2.try_into().expect("Length must be exactly `u8::MAX + 1`");
-
-    Self {
-      function_gc_ptr,
-      function_kind,
-      local_var_opts,
-      local_var_count: 1,
-      scope_depth: 0,
-      upvalues,
-    }
-  }
-
-  pub const fn begin_scope(&mut self) {
-    self.scope_depth += 1;
-  }
-
-  pub fn chunk(&mut self) -> &mut Chunk {
-    self.function().chunk_mut()
-  }
-
-  pub fn end_scope(&mut self) -> Vec<OpCode> {
-    self.scope_depth -= 1;
-
-    let mut op_codes = Vec::new();
-
-    while self.local_var_count > 0
-      && let index = (self.local_var_count - 1) as usize
-      && let local_var = self.local_var_opts[index].as_ref().unwrap()
-      && let Some(depth) = local_var.depth_opt()
-      && depth > &self.scope_depth
-    {
-      if local_var.is_captured() {
-        op_codes.push(CloseUpvalue);
-      } else {
-        op_codes.push(Pop);
-      }
-      self.local_var_count -= 1;
-    }
-
-    op_codes
-  }
-
-  fn mark_latest_var_initialized(&mut self) {
-    if self.scope_depth != 0 {
-      let index = (self.local_var_count - 1) as usize;
-      if let LocalBinding { depth_opt, .. } = self.local_var_opts[index].as_mut().unwrap() {
-        let _ = depth_opt.insert(self.scope_depth);
-      }
-    }
-  }
-
-  fn function(&mut self) -> &mut FunctionObj {
-    match unsafe { &mut *self.function_gc_ptr }.object {
-      HeapFunction(fn_ptr) => unsafe { &mut *fn_ptr },
-      _ => {
-        panic!("The program's `function_gc_ptr` is only allowed to be a function!");
-      },
-    }
-  }
 }
 
 pub struct Compiler {
   class_contexts: Vec<ClassContext>,
   parser: Parser,
   programs: Vec<Program>,
-  pub gc: Gc,
+  pub heap: Heap,
 }
 
 impl Compiler {
@@ -266,7 +69,7 @@ impl Default for Compiler {
       class_contexts: Vec::new(),
       parser: Parser::new(String::new()),
       programs: Vec::new(),
-      gc: Gc::new(),
+      heap: Heap::new(),
     }
   }
 }
@@ -275,13 +78,13 @@ impl Compiler {
   pub fn mark_roots(&mut self) {
     for program in self.programs.iter().rev() {
       let function_gc = unsafe { &mut *program.function_gc_ptr };
-      self.gc.mark_object(function_gc);
+      self.heap.mark_object(function_gc);
     }
   }
 
   pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {
     let script = MainScript { arity: 0, chunk: Chunk::default(), upvalue_count: 0 };
-    self.programs = vec![Program::new(self.gc.allocate_function(script), Script)];
+    self.programs = vec![Program::new(self.heap.allocate_function(script), Script)];
 
     self.parser = Parser::new(source);
     self.parser.advance();
@@ -398,6 +201,7 @@ impl Compiler {
     arg_count
   }
 
+  // TODO: Most/all of these functions can probably move into the parser
   fn parse_binary(&mut self, _can_assign: bool) {
     enum Bytes {
       Zero,
@@ -449,7 +253,7 @@ impl Compiler {
     ) {
       let class_name_gc_ptr = {
         let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
-        self.gc.copy_string(&self.parser.source, loc).1
+        self.heap.copy_string(&self.parser.source, loc).1
       };
 
       let name_byte = self.make_ident_constant();
@@ -474,7 +278,7 @@ impl Compiler {
           }
 
           self.program().begin_scope();
-          self.add_local(name_of(Super));
+          self.add_local("super".to_string());
           self.define_variable(0);
 
           self.reference_named_variable(class_name_gc_ptr, false); // Load subclass
@@ -521,7 +325,7 @@ impl Compiler {
     }
 
     if self.parser.is_panicking {
-      self.synchronize();
+      self.parser.synchronize();
     }
   }
 
@@ -610,11 +414,11 @@ impl Compiler {
   fn parse_function(&mut self, function_kind: FunctionKind) {
     let function_obj = {
       let prev_loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
-      let (_, name_gc_ptr) = self.gc.copy_string(&self.parser.source, prev_loc);
+      let (_, name_gc_ptr) = self.heap.copy_string(&self.parser.source, prev_loc);
       UserDefined { arity: 0, chunk: Chunk::default(), name_gc_ptr, upvalue_count: 0 }
     };
 
-    self.programs.push(Program::new(self.gc.allocate_function(function_obj), function_kind));
+    self.programs.push(Program::new(self.heap.allocate_function(function_obj), function_kind));
 
     self.program().begin_scope();
 
@@ -806,7 +610,7 @@ impl Compiler {
     let mut fake_loc = self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
     fake_loc.start_index += 1;
     fake_loc.length -= 2;
-    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, &fake_loc);
+    let (_, gc_ptr) = self.heap.copy_string(&self.parser.source, &fake_loc);
     self.emit_constant(Reference(gc_ptr));
   }
 
@@ -829,15 +633,15 @@ impl Compiler {
 
     if method_name_opt.is_some() {
       let name_byte = self.make_ident_constant();
-      self.reference_named_variable(self.gc.this_str_gc_ptr, false);
+      self.reference_named_variable(self.heap.this_str_gc_ptr, false);
 
       if self.token_is_a(&LeftParen) {
         let arg_count = self.parse_args();
-        self.reference_named_variable(self.gc.super_str_gc_ptr, false);
+        self.reference_named_variable(self.heap.super_str_gc_ptr, false);
         self.emit_bytes(SuperInvoke, name_byte);
         self.emit_byte(arg_count);
       } else {
-        self.reference_named_variable(self.gc.super_str_gc_ptr, false);
+        self.reference_named_variable(self.heap.super_str_gc_ptr, false);
         self.emit_bytes(GetSuper, name_byte);
       }
     }
@@ -979,7 +783,7 @@ impl Compiler {
 
   fn make_ident_constant(&mut self) -> u8 {
     let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
-    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, loc);
+    let (_, gc_ptr) = self.heap.copy_string(&self.parser.source, loc);
     self.reference_ident_constant(gc_ptr)
   }
 
@@ -989,7 +793,7 @@ impl Compiler {
 
   fn make_named_variable(&mut self, can_assign: bool) {
     let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc.clone();
-    let (_, gc_ptr) = self.gc.copy_string(&self.parser.source, loc);
+    let (_, gc_ptr) = self.heap.copy_string(&self.parser.source, loc);
     self.reference_named_variable(gc_ptr, can_assign);
   }
 
@@ -1064,20 +868,6 @@ impl Compiler {
     }
   }
 
-  fn synchronize(&mut self) {
-    self.parser.is_panicking = false;
-
-    while self.parser.current_token_opt.as_ref().unwrap().typ != Eof
-      && self.parser.previous_token_opt.as_ref().unwrap().typ != Semicolon
-      && !matches!(
-        &self.parser.current_token_opt.as_ref().unwrap().typ,
-        Class | For | Fun | If | Print | Return | Var | While
-      )
-    {
-      self.parser.advance();
-    }
-  }
-
   /// # Panics
   /// When current token doesn't exist
   pub fn token_is_a(&mut self, typ: &TokenType) -> bool {
@@ -1087,13 +877,4 @@ impl Compiler {
     self.parser.advance();
     true
   }
-}
-
-fn name_of(typ: TokenType) -> String {
-  match typ {
-    This => "this",
-    Super => "super",
-    x => panic!("The function only supports `This` and `Super`, not: {x:?}"),
-  }
-  .to_string()
 }

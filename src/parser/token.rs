@@ -1,22 +1,9 @@
+use crate::core::source_loc::SourceLoc;
+
 #[derive(Clone, Debug)]
 pub struct Token {
   pub loc: SourceLoc,
   pub typ: TokenType,
-}
-
-#[derive(Clone, Debug)]
-#[allow(unused)]
-pub struct SourceLoc {
-  pub start_index: u32,
-  pub line_num: u32,
-  pub column: u32,
-  pub length: u32,
-}
-
-impl SourceLoc {
-  pub fn extract(&self, source: &str) -> String {
-    source.chars().skip(self.start_index as usize).take(self.length as usize).collect::<String>()
-  }
 }
 
 #[derive(Clone, Debug, PartialEq)]

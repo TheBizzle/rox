@@ -1,25 +1,33 @@
 use std::iter::Peekable;
 use std::vec::IntoIter;
 
-use crate::error::LexerError::{self, UnexpectedToken, UnterminatedString};
-use crate::token::TokenType::{
-  self, And, Bang, BangEqual, Class, Comma, Dot, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
-  GreaterEqual, Identifier, If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Or,
-  Plus, Print, Return, RightBrace, RightParen, Semicolon, Slash, Star, Super, This, True, Var, While,
+use crate::core::error::LexerError::{self, UnexpectedToken, UnterminatedString};
+use crate::core::source_loc::SourceLoc;
+
+use super::token::{
+  Token,
+  TokenType::{
+    self, And, Bang, BangEqual, Class, Comma, Dot, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
+    GreaterEqual, Identifier, If, LeftBrace, LeftParen, Less, LessEqual, LoxString, Minus, Nil, Number, Or,
+    Plus, Print, Return, RightBrace, RightParen, Semicolon, Slash, Star, Super, This, True, Var, While,
+  },
 };
-use crate::token::{SourceLoc, Token};
 
 pub struct Lexer {
   chars: Peekable<IntoIter<char>>,
   pos: u32,
   pos_prior: u32,
   last_newline_pos: u32,
-  pub(super) line_num: u32,
+  line_num: u32,
 }
 
 impl Lexer {
   pub const fn new(chars: Peekable<IntoIter<char>>) -> Self {
     Self { chars, pos: 0, pos_prior: 0, last_newline_pos: 0, line_num: 1 }
+  }
+
+  pub const fn get_line_num(&self) -> u32 {
+    self.line_num
   }
 
   pub fn next_token(&mut self) -> Result<Token, LexerError> {
@@ -40,10 +48,10 @@ impl Lexer {
       Some('+') => Ok(Plus),
       Some('/') => Ok(Slash),
       Some('*') => Ok(Star),
-      Some('!') => Ok(self.slurp_if_equals_char().map_or(Bang, |()| BangEqual)),
-      Some('=') => Ok(self.slurp_if_equals_char().map_or(Equal, |()| EqualEqual)),
-      Some('<') => Ok(self.slurp_if_equals_char().map_or(Less, |()| LessEqual)),
-      Some('>') => Ok(self.slurp_if_equals_char().map_or(Greater, |()| GreaterEqual)),
+      Some('!') => Ok(self.slurp_if_an_equals_char().map_or(Bang, |()| BangEqual)),
+      Some('=') => Ok(self.slurp_if_an_equals_char().map_or(Equal, |()| EqualEqual)),
+      Some('<') => Ok(self.slurp_if_an_equals_char().map_or(Less, |()| LessEqual)),
+      Some('>') => Ok(self.slurp_if_an_equals_char().map_or(Greater, |()| GreaterEqual)),
       Some('"') => self.make_string(),
       _ => Err(UnexpectedToken),
     }
@@ -58,11 +66,13 @@ impl Lexer {
     let start_index = self.pos_prior;
     let line_num = self.line_num;
     let column = self.pos_prior - self.last_newline_pos + 1;
+
     let length = if let LoxString(ref s) = typ {
       u32::try_from(s.len()).unwrap() + 2
     } else {
       self.pos - self.pos_prior
     };
+
     Token { typ, loc: SourceLoc { start_index, line_num, column, length } }
   }
 
@@ -72,11 +82,13 @@ impl Lexer {
         Some(' ' | '\r' | '\t') => {
           self.advance();
         },
+
         Some('\n') => {
           self.last_newline_pos = self.pos;
           self.line_num += 1;
           self.advance();
         },
+
         Some('/') => {
           let mut peekerator = self.chars.clone();
           let _ = peekerator.next();
@@ -88,6 +100,7 @@ impl Lexer {
             break;
           }
         },
+
         _ => {
           break;
         },
@@ -100,7 +113,7 @@ impl Lexer {
     self.pos_prior = self.pos;
   }
 
-  fn slurp_if_equals_char(&mut self) -> Option<()> {
+  fn slurp_if_an_equals_char(&mut self) -> Option<()> {
     if self.chars.peek() == Some(&'=') {
       self.slurp_char_opt().map(|_| ())
     } else {

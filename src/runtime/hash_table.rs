@@ -2,11 +2,11 @@ use std::alloc::{Layout, alloc, handle_alloc_error};
 use std::ptr::{addr_of, null_mut};
 use std::slice::{from_raw_parts, from_raw_parts_mut};
 
-use crate::gc::{GcObject, HeapObject::HeapString, StringObj};
+use crate::core::memory::{free_array, next_capacity};
 
-use crate::memory::{free_array, next_capacity};
-
-use crate::value::Value;
+use super::gc_object::GcObject;
+use super::heap_object::{HeapObject::HeapString, StringObj};
+use super::value::Value;
 
 const TABLE_MAX_LOAD: f64 = 0.75;
 
@@ -235,6 +235,7 @@ fn find_cell(entry_opts: *mut Cell, capacity: usize, key_ptr: *const StringObj) 
   }
 }
 
+// TODO: Move to GC
 fn key_as_str_ptr(key: *const GcObject) -> *const StringObj {
   match unsafe { &*key }.object {
     HeapString(str_key) => str_key,

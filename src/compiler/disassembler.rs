@@ -1,15 +1,16 @@
-use crate::chunk::Chunk;
+use crate::runtime::chunk::Chunk;
+use crate::runtime::gc_object::GcObject;
+use crate::runtime::heap_object::HeapObject::HeapFunction;
+use crate::runtime::value::Value::Reference;
 
-use crate::gc::{GcObject, HeapObject::HeapFunction};
-
-use crate::opcode::OpCode::{
+use super::opcode::OpCode::{
   self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
   GetLocal, GetProperty, GetSuper, GetUpvalue, Greater, Inherit, Invoke, Jump, JumpIfFalse, Less, Loop,
   Method, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue,
   Subtract, SuperInvoke, True,
 };
 
-use crate::value::Value::Reference;
+// TODO: Does this file really belong in `compiler`?
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
   println!("== {name} ==");

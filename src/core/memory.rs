@@ -1,18 +1,21 @@
 use std::alloc::{self, Layout, handle_alloc_error};
 use std::mem::{align_of, size_of};
 
+#[macro_export]
 macro_rules! free_array {
   ($type: ty, $pointer: expr, $old_count: expr) => {
-    $crate::memory::reallocate::<$type>($pointer, $old_count as usize, 0)
+    $crate::core::memory::reallocate::<$type>($pointer, $old_count as usize, 0)
   };
 }
 
+#[macro_export]
 macro_rules! grow_array {
   ($type: ty, $pointer: expr, $old_count: expr, $new_count: expr) => {
-    $crate::memory::reallocate::<$type>($pointer, $old_count as usize, $new_count as usize)
+    $crate::core::memory::reallocate::<$type>($pointer, $old_count as usize, $new_count as usize)
   };
 }
 
+#[macro_export]
 macro_rules! next_capacity {
   ($old_capacity: expr) => {
     if $old_capacity < 8 {
@@ -23,9 +26,9 @@ macro_rules! next_capacity {
   };
 }
 
-pub(super) use free_array;
-pub(super) use grow_array;
-pub(super) use next_capacity;
+pub use free_array;
+pub use grow_array;
+pub use next_capacity;
 
 pub trait Freeable {
   fn free(&mut self);

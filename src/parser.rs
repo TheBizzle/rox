@@ -1,17 +1,21 @@
-use crate::error::LexerError::{UnexpectedToken, UnterminatedString};
+use crate::core::error::LexerError::{UnexpectedToken, UnterminatedString};
 
-use crate::lexer::Lexer;
+mod lexer;
+use lexer::Lexer;
 
-use crate::token::Token;
-use crate::token::TokenType::{self, Eof};
+pub mod token;
+use token::{
+  Token,
+  TokenType::{self, Class, Eof, For, Fun, If, Print, Return, Semicolon, Var, While},
+};
 
 pub struct Parser {
   lexer: Lexer,
-  pub(super) current_token_opt: Option<Token>,
-  pub(super) previous_token_opt: Option<Token>,
-  pub(super) had_error: bool,
-  pub(super) is_panicking: bool,
-  pub(super) source: String,
+  pub current_token_opt: Option<Token>,
+  pub previous_token_opt: Option<Token>,
+  pub had_error: bool,
+  pub is_panicking: bool,
+  pub source: String,
 }
 
 impl Parser {
@@ -65,6 +69,20 @@ impl Parser {
     t_opt
   }
 
+  pub fn synchronize(&mut self) {
+    self.is_panicking = false;
+
+    while self.current_token_opt.as_ref().unwrap().typ != Eof
+      && self.previous_token_opt.as_ref().unwrap().typ != Semicolon
+      && !matches!(
+        &self.current_token_opt.as_ref().unwrap().typ,
+        Class | For | Fun | If | Print | Return | Var | While
+      )
+    {
+      self.advance();
+    }
+  }
+
   pub fn error_at_current(&mut self, message: &str) {
     self.error_at(self.current_token_opt.clone().as_ref(), message);
   }
@@ -83,8 +101,9 @@ impl Parser {
     let line_num = if let Some(Token { loc, .. }) = token_opt.or(self.previous_token_opt.as_ref()) {
       loc.line_num
     } else {
-      self.lexer.line_num
+      self.lexer.get_line_num()
     };
+    // TODO: Print out elsewhere
     eprint!("[line {line_num}] Error");
 
     if let Some(Token { loc, typ }) = token_opt {
