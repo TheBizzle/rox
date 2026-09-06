@@ -596,7 +596,7 @@ impl VM {
 
       if DEBUG_STRESS_GC {
         self.collect_garbage();
-      } else if self.instrs_since_last_gc >= 999 {
+      } else if self.instrs_since_last_gc >= 10000 {
         self.collect_garbage();
         self.instrs_since_last_gc = 0;
       } else {
