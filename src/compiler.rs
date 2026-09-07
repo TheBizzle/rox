@@ -788,7 +788,14 @@ impl Compiler {
   }
 
   fn reference_ident_constant(&mut self, name_gc_ptr: *mut GcObject) -> u8 {
-    self.make_constant(Reference(name_gc_ptr))
+    #[allow(clippy::option_if_let_else)]
+    if let Some(cached) = self.program().ident_byte_cache.get(&name_gc_ptr) {
+      *cached
+    } else {
+      let generated = self.make_constant(Reference(name_gc_ptr));
+      self.program().ident_byte_cache.insert(name_gc_ptr, generated);
+      generated
+    }
   }
 
   fn make_named_variable(&mut self, can_assign: bool) {

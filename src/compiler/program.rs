@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::runtime::chunk::Chunk;
 use crate::runtime::gc_object::GcObject;
 use crate::runtime::heap_object::FunctionObj;
@@ -48,6 +50,8 @@ pub(super) struct Program {
   pub(super) function_gc_ptr: *mut GcObject,
   pub(super) function_kind: FunctionKind,
 
+  pub(super) ident_byte_cache: HashMap<*mut GcObject, u8>,
+
   pub(super) local_var_opts: Box<[Option<LocalVar>; u8::MAX as usize + 1]>,
   pub(super) local_var_count: u16,
   pub(super) scope_depth: u8,
@@ -79,6 +83,7 @@ impl Program {
     Self {
       function_gc_ptr,
       function_kind,
+      ident_byte_cache: HashMap::new(),
       local_var_opts,
       local_var_count: 1,
       scope_depth: 0,
