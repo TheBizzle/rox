@@ -1,1 +1,6 @@
+/benchmark/__pycache__/
+/benchmark/benchmark_report.html
+/benchmark/highcharts.js
+/benchmark/history.json
+
 target/
