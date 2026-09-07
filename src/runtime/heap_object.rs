@@ -294,10 +294,6 @@ impl ObjInstanceObj {
     unsafe { &*self.class_obj_ptr() }
   }
 
-  fn class_mut(&mut self) -> &mut ClassObj {
-    unsafe { &mut *self.class_obj_ptr() }
-  }
-
   fn class_obj_ptr(&self) -> *mut ClassObj {
     let HeapClass(class_obj_ptr) = unsafe { &*self.class_gc_ptr }.object else {
       panic!("Instance's class must be a class");
@@ -315,7 +311,6 @@ impl Display for ObjInstanceObj {
 impl Freeable for ObjInstanceObj {
   fn free(&mut self) {
     self.fields.free();
-    self.class_mut().free();
   }
 }
 
