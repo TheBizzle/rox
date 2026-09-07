@@ -306,7 +306,9 @@ impl Compiler {
 
       if let Some(current_class) = self.class_contexts.last() {
         if current_class.has_superclass {
-          self.program().end_scope();
+          for op_code in self.program().end_scope() {
+            self.emit_byte(op_code);
+          }
         }
         self.class_contexts.pop();
       }
