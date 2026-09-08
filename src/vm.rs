@@ -54,7 +54,7 @@ pub struct VM {
   compiler: Compiler,
   current_frame_index: usize,
   frames: [CallFrame; FRAMES_MAX],
-  instrs_since_last_gc: u16,
+  instrs_since_last_gc: u32,
   native_fns: Vec<(*mut GcObject, *mut GcObject)>,
   _stack: Box<[Value; STACK_MAX]>,
   stack_addr: *mut Value,
