@@ -18,7 +18,7 @@ Usage:
     python run.py show <run_id> [--history FILE]
 
 `run` does everything in one step: it finds the benchmark scripts (in
-benchmark/tests-lite-rox, next to where you run this from), executes the
+mothership/test/benchmark, next to where you run this from), executes the
 given interpreter against each one, parses every number it prints, and
 appends a new row to history.json -- along with the interpreter's path and
 its (shortened) git commit SHA. Nothing is overwritten; every `run` adds a

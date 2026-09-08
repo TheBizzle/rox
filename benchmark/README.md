@@ -32,7 +32,7 @@ python3 run.py run <path-to-executable> [--label TEXT]
 ```
 
 This one command:
-1. Looks for your `.lox` benchmark scripts in `benchmark/tests-lite-rox`,
+1. Looks for your `.lox` benchmark scripts in `mothership/test/benchmark`,
    relative to wherever you run this from. Pass `--benchmarks DIR` if yours
    live somewhere else.
 2. Runs the executable against each script directly (no manual piping).
