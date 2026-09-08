@@ -1,1 +1,1 @@
-*.lalrpop linguist-language=Yacc
+/benchmark/** linguist-vendored
