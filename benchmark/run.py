@@ -52,7 +52,7 @@ from correctness import find_correctness_errors, build_jlox_reference, format_mi
 DEFAULT_HISTORY_FILE = str(Path(__file__).resolve().parent / "history.json")
 DEFAULT_REPORT_FILE = str(Path(__file__).resolve().parent / "benchmark_report.html")
 DEFAULT_TIMEOUT = 120  # seconds, per benchmark script
-BENCHMARK_DIR = Path("benchmark") / "tests-lite-rox"
+BENCHMARK_DIR = Path("mothership") / "test" / "benchmark"
 
 
 # --------------------------------------------------------------------------
