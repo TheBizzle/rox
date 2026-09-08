@@ -29,7 +29,7 @@ impl Heap {
   pub fn mark_roots(&mut self) {
     self.mark_tables();
 
-    for gc_ptr in [self.init_str_gc_ptr, self.super_str_gc_ptr, self.this_str_gc_ptr] {
+    for gc_ptr in self.permanent_ptrs() {
       let str_gc = unsafe { &mut *gc_ptr };
       self.mark_object(str_gc);
     }

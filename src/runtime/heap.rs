@@ -49,12 +49,15 @@ impl Heap {
       super_str_gc_ptr: null_mut(),
     };
 
-    // TODO: Just put these in a hashmap
     this.init_str_gc_ptr = intern(&mut this, "init");
     this.this_str_gc_ptr = intern(&mut this, "this");
     this.super_str_gc_ptr = intern(&mut this, "super");
 
     this
+  }
+
+  pub(super) const fn permanent_ptrs(&self) -> [*mut GcObject; 3] {
+    [self.init_str_gc_ptr, self.super_str_gc_ptr, self.this_str_gc_ptr]
   }
 }
 
