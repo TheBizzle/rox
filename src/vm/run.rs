@@ -681,7 +681,6 @@ impl VM {
     }
 
     self.compiler.mark_roots();
-    self.compiler.heap.mark_roots();
   }
 
   fn bind_method(&mut self, class: &ClassObj, key_ptr: *const StringObj) -> Option<*mut GcObject> {
