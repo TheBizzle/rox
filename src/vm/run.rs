@@ -6,7 +6,7 @@ use std::slice;
 use crate::compiler::disassembler::disassemble_instruction;
 use crate::compiler::function_kind::FunctionKind::{self, Function, Method, Script};
 
-use crate::runtime::gc_object::GcObject;
+use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap_gc::DEBUG_STRESS_GC;
 use crate::runtime::heap_object::FunctionObj::{MainScript, UserDefined};
 use crate::runtime::heap_object::HeapObject::{
@@ -91,11 +91,8 @@ impl VM {
 
     macro_rules! read_string {
       () => {{
-        if let Reference(gc_ptr) = read_constant!()
-          && let GcObject { object, .. } = unsafe { &*gc_ptr }
-          && let HeapString(str_obj_ptr) = object
-        {
-          (str_obj_ptr.cast_const(), gc_ptr)
+        if let Reference(GcPtr(gc_ptr)) = read_constant!() {
+          (unsafe { &*gc_ptr }.object.cast_string(), gc_ptr)
         } else {
           exit(1);
         }
@@ -140,13 +137,13 @@ impl VM {
               push_and_win!(Double(x + y))
             },
             #[allow(irrefutable_let_patterns)]
-            (Reference(x), Reference(y))
+            (Reference(GcPtr(x)), Reference(GcPtr(y)))
               if let GcObject { object: HeapString(str1), .. } = unsafe { &*x }
                 && let GcObject { object: HeapString(str2), .. } = unsafe { &*y } =>
             {
               let _ = self.pop();
               let _ = self.pop();
-              push_and_win!(Reference(self.compiler.heap.concatenate_strings(*str1, *str2).1))
+              push_and_win!(Reference(GcPtr(self.compiler.heap.concatenate_strings(*str1, *str2).1)))
             },
             _ => runtime_error!("Operands must be two numbers or two strings."),
           }
@@ -155,7 +152,7 @@ impl VM {
         Some(Class) => {
           let (_, name_gc_ptr) = read_string!();
           let x = self.compiler.heap.allocate_class(ClassObj::new(name_gc_ptr));
-          push_and_win!(Reference(x))
+          push_and_win!(Reference(GcPtr(x)))
         },
 
         Some(CloseUpvalue) => {
@@ -166,12 +163,12 @@ impl VM {
 
         Some(Closure) => {
           let constant = read_constant!();
-          if let Reference(fn_gc_ptr) = constant
+          if let Reference(GcPtr(fn_gc_ptr)) = constant
             && let GcObject { object, .. } = unsafe { &*fn_gc_ptr }
             && let HeapFunction(_) = object
           {
             let (closure_ptr, closure_gc_ptr) = self.compiler.heap.allocate_closure(fn_gc_ptr);
-            let result = push_and_win!(Reference(closure_gc_ptr));
+            let result = push_and_win!(Reference(GcPtr(closure_gc_ptr)));
 
             let closure = unsafe { &*closure_ptr };
 
@@ -227,12 +224,11 @@ impl VM {
         },
 
         Some(GetGlobal) => {
-          let (name_ptr, _) = read_string!();
-          if let Some(r) = self.compiler.heap.globals.get(name_ptr) {
+          let (name, _) = read_string!();
+          if let Some(r) = self.compiler.heap.globals.get(name) {
             let value = unsafe { &*r }.clone();
             push_and_win!(value)
           } else {
-            let name = unsafe { &*name_ptr };
             runtime_error!("Undefined variable '{}'.", name.to_text())
           }
         },
@@ -245,21 +241,20 @@ impl VM {
         },
 
         Some(GetProperty) => {
-          if let Reference(instance_gc_ptr) = self.peek(0)
+          if let Reference(GcPtr(instance_gc_ptr)) = self.peek(0)
             && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
           {
             let instance_obj = unsafe { &*instance_obj_ptr };
 
-            let (str_obj_ptr, _) = read_string!();
+            let (name, _) = read_string!();
 
-            if let Some(property_value) = instance_obj.fields.get(str_obj_ptr) {
+            if let Some(property_value) = instance_obj.fields.get(name) {
               self.pop();
               push_and_win!(unsafe { &*property_value }.clone())
-            } else if let Some(value_gc_ptr) = self.bind_method(instance_obj.class(), str_obj_ptr) {
-              push_and_win!(Reference(value_gc_ptr))
+            } else if let Some(value_gc_ptr) = self.bind_method(instance_obj.class(), name) {
+              push_and_win!(Reference(GcPtr(value_gc_ptr)))
             } else {
-              let name_str = unsafe { &*str_obj_ptr };
-              runtime_error!("Undefined property '{name_str}'.")
+              runtime_error!("Undefined property '{name}'.")
             }
           } else {
             runtime_error!("Only instances have properties.")
@@ -267,17 +262,16 @@ impl VM {
         },
 
         Some(GetSuper) => {
-          let (property_str_ptr, _) = read_string!();
+          let (name_str, _) = read_string!();
 
-          if let Reference(superclass_gc_ptr) = self.pop()
+          if let Reference(GcPtr(superclass_gc_ptr)) = self.pop()
             && let HeapClass(superclass_obj_ptr) = unsafe { &*superclass_gc_ptr }.object
           {
             let superclass_obj = unsafe { &*superclass_obj_ptr };
 
-            if let Some(value_gc_ptr) = self.bind_method(superclass_obj, property_str_ptr) {
-              push_and_win!(Reference(value_gc_ptr))
+            if let Some(value_gc_ptr) = self.bind_method(superclass_obj, name_str) {
+              push_and_win!(Reference(GcPtr(value_gc_ptr)))
             } else {
-              let name_str = unsafe { &*property_str_ptr };
               runtime_error!("Undefined property '{name_str}'.")
             }
           } else {
@@ -299,11 +293,11 @@ impl VM {
         Some(Greater) => binary_op!(Boolean, >),
 
         Some(Inherit) => {
-          if let Reference(super_gc_ptr) = self.peek(1)
+          if let Reference(GcPtr(super_gc_ptr)) = self.peek(1)
             && let HeapClass(super_class_obj_ptr) = unsafe { &*super_gc_ptr }.object
             && let superclass = unsafe { &mut *super_class_obj_ptr }
           {
-            if let Reference(sub_gc_ptr) = self.peek(0)
+            if let Reference(GcPtr(sub_gc_ptr)) = self.peek(0)
               && let HeapClass(sub_class_obj_ptr) = unsafe { &*sub_gc_ptr }.object
               && let subclass = unsafe { &mut *sub_class_obj_ptr }
             {
@@ -400,13 +394,13 @@ impl VM {
         },
 
         Some(SetGlobal) => {
-          let (name_str_ptr, name_gc_ptr) = read_string!();
+          let (name, name_gc_ptr) = read_string!();
           let value = self.peek(0);
           let is_binding_new = self.compiler.heap.globals.set(name_gc_ptr, value);
 
           if is_binding_new {
-            self.compiler.heap.globals.delete(name_str_ptr);
-            runtime_error!("Undefined variable '{}'.", unsafe { &*name_str_ptr }.to_text())
+            self.compiler.heap.globals.delete(name);
+            runtime_error!("Undefined variable '{}'.", name.to_text())
           } else {
             Continue
           }
@@ -421,7 +415,7 @@ impl VM {
         },
 
         Some(SetProperty) => {
-          if let Reference(instance_gc_ptr) = self.peek(1)
+          if let Reference(GcPtr(instance_gc_ptr)) = self.peek(1)
             && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
           {
             let instance_obj = unsafe { &mut *instance_obj_ptr };
@@ -451,16 +445,16 @@ impl VM {
         Some(Subtract) => binary_op!(Double, -),
 
         Some(SuperInvoke) => {
-          let (name_ptr, _) = read_string!();
+          let (name, _) = read_string!();
           let arg_count = read_u8!();
-          let Reference(gc_ptr) = self.pop() else {
+          let Reference(GcPtr(gc_ptr)) = self.pop() else {
             panic!("Super-invokee value must be a reference");
           };
           let HeapClass(class_obj_ptr) = unsafe { &*gc_ptr }.object else {
             panic!("Super-invokee value must be a class");
           };
           let class = unsafe { &*class_obj_ptr };
-          self.invoke_from_class(class, name_ptr, arg_count).unwrap_or(Continue)
+          self.invoke_from_class(class, name, arg_count).unwrap_or(Continue)
         },
 
         Some(True) => push_and_win!(Boolean(true)),
@@ -522,7 +516,7 @@ impl VM {
   }
 
   fn call_value_for_error(&mut self, callee: &Value, arg_count: u8) -> Option<ProgressState> {
-    if let Reference(gc_ptr) = callee
+    if let Reference(GcPtr(gc_ptr)) = callee
       && let HeapBoundMethod(bound_method_ptr) = unsafe { &**gc_ptr }.object
       && !bound_method_ptr.is_null()
       && let bound_method_obj = unsafe { &*bound_method_ptr }
@@ -530,13 +524,13 @@ impl VM {
     {
       unsafe { *self.stack_top.sub((arg_count + 1) as usize) = bound_method_obj.receiver.clone() };
       self.call_function_for_error(closure_obj_ptr, bound_method_obj.method_gc_ptr, arg_count, &Function)
-    } else if let Reference(gc_ptr) = callee
+    } else if let Reference(GcPtr(gc_ptr)) = callee
       && let HeapClass(class_obj_ptr) = unsafe { &**gc_ptr }.object
       && !class_obj_ptr.is_null()
     {
       let obj_instance_obj = ObjInstanceObj::new(*gc_ptr);
       let obj_instance_gc_ptr = self.compiler.heap.allocate_obj_instance(obj_instance_obj);
-      unsafe { *self.stack_top.sub((arg_count + 1) as usize) = Reference(obj_instance_gc_ptr) };
+      unsafe { *self.stack_top.sub((arg_count + 1) as usize) = Reference(GcPtr(obj_instance_gc_ptr)) };
 
       let HeapString(init_str_ptr) = unsafe { &*self.compiler.heap.init_str_gc_ptr }.object else {
         panic!("`init`'s name must be a string!");
@@ -544,25 +538,25 @@ impl VM {
 
       let class_obj = unsafe { &*class_obj_ptr };
       if let Some(value_ptr) = class_obj.methods.get(init_str_ptr) {
-        let Reference(closure_gc_ptr) = (unsafe { &*value_ptr }) else {
+        let Reference(GcPtr(closure_gc_ptr)) = unsafe { &*value_ptr }.clone() else {
           panic!("`init` must be a reference!");
         };
-        let HeapClosure(closure_obj_ptr) = unsafe { &**closure_gc_ptr }.object else {
+        let HeapClosure(closure_obj_ptr) = unsafe { &*closure_gc_ptr }.object else {
           panic!("`init` must be a closure!");
         };
-        self.call_function_for_error(closure_obj_ptr, *closure_gc_ptr, arg_count, &Method)
+        self.call_function_for_error(closure_obj_ptr, closure_gc_ptr, arg_count, &Method)
       } else if arg_count == 0 {
         None
       } else {
         self.runtime_error_impl(format_args!("Expected 0 arguments but got {arg_count}."));
         Some(Error)
       }
-    } else if let Reference(gc_ptr) = callee
+    } else if let Reference(GcPtr(gc_ptr)) = callee
       && let HeapClosure(closure_obj_ptr) = unsafe { &**gc_ptr }.object
       && !closure_obj_ptr.is_null()
     {
       self.call_function_for_error(closure_obj_ptr, *gc_ptr, arg_count, &Function)
-    } else if let Reference(gc_ptr) = callee
+    } else if let Reference(GcPtr(gc_ptr)) = callee
       && let HeapNativeFn(native_fn_ptr) = unsafe { &**gc_ptr }.object
       && !native_fn_ptr.is_null()
     {
@@ -620,7 +614,7 @@ impl VM {
 
     self.native_fns.push((name_gc_ptr, native_fn_gc_ptr));
 
-    self.compiler.heap.globals.set(name_gc_ptr, Reference(native_fn_gc_ptr));
+    self.compiler.heap.globals.set(name_gc_ptr, Reference(GcPtr(native_fn_gc_ptr)));
   }
 
   fn runtime_error_impl(&mut self, args: Arguments) {
@@ -683,13 +677,13 @@ impl VM {
     self.compiler.mark_roots();
   }
 
-  fn bind_method(&mut self, class: &ClassObj, key_ptr: *const StringObj) -> Option<*mut GcObject> {
-    if let Some(method_ptr) = class.methods.get(key_ptr) {
-      let Reference(ptr) = (unsafe { &*method_ptr }) else {
+  fn bind_method(&mut self, class: &ClassObj, key: &StringObj) -> Option<*mut GcObject> {
+    if let Some(method_ptr) = class.methods.get(key) {
+      let Reference(GcPtr(ptr)) = unsafe { &*method_ptr }.clone() else {
         panic!("Bound method must be a method!");
       };
 
-      let bound_method_obj = BoundMethodObj { receiver: self.peek(0), method_gc_ptr: *ptr };
+      let bound_method_obj = BoundMethodObj { receiver: self.peek(0), method_gc_ptr: ptr };
       let bound_method_ptr = self.compiler.heap.allocate_bound_method(bound_method_obj);
       self.pop();
       Some(bound_method_ptr)
@@ -699,7 +693,7 @@ impl VM {
   }
 
   fn define_method(&mut self, name_ptr: *const GcObject) {
-    let Reference(class_gc_ptr) = self.peek(1) else {
+    let Reference(GcPtr(class_gc_ptr)) = self.peek(1) else {
       panic!("Method's owner must be a reference!");
     };
 
@@ -715,7 +709,7 @@ impl VM {
 
   fn invoke(&mut self, name: *const StringObj, arg_count: u8) -> Option<ProgressState> {
     let receiver = self.peek(arg_count as usize);
-    if let Reference(gc_ptr) = receiver
+    if let Reference(GcPtr(gc_ptr)) = receiver
       && let HeapObjInstance(obj_instance_ptr) = unsafe { &*gc_ptr }.object
     {
       let obj_instance = unsafe { &*obj_instance_ptr };
@@ -735,13 +729,13 @@ impl VM {
     &mut self, class: &ClassObj, name_ptr: *const StringObj, arg_count: u8,
   ) -> Option<ProgressState> {
     if let Some(value_ptr) = class.methods.get(name_ptr) {
-      let Reference(closure_gc_ptr) = (unsafe { &*value_ptr }) else {
+      let Reference(GcPtr(closure_gc_ptr)) = unsafe { &*value_ptr }.clone() else {
         panic!("Method must be a reference!");
       };
-      let HeapClosure(closure_obj_ptr) = unsafe { &**closure_gc_ptr }.object else {
+      let HeapClosure(closure_obj_ptr) = unsafe { &*closure_gc_ptr }.object else {
         panic!("Method must be a closure!");
       };
-      self.call_function_for_error(closure_obj_ptr, *closure_gc_ptr, arg_count, &Method)
+      self.call_function_for_error(closure_obj_ptr, closure_gc_ptr, arg_count, &Method)
     } else {
       let name = unsafe { &*name_ptr };
       self.runtime_error_impl(format_args!("Undefined property '{name}'."));
@@ -758,7 +752,7 @@ fn values_are_equal(a: Value, b: Value) -> bool {
   match (a, b) {
     (Boolean(x), Boolean(y)) => x == y,
     (Double(x), Double(y)) => (x - y).abs() < 1e-9,
-    (Reference(x), Reference(y)) => {
+    (Reference(GcPtr(x)), Reference(GcPtr(y))) => {
       let (a, b) = unsafe { (&*x, &*y) };
       objs_are_equal(&a.object, &b.object)
     },

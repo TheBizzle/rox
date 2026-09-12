@@ -27,6 +27,16 @@ use HeapObject::{
   HeapUpvalue,
 };
 
+impl HeapObject {
+  pub fn cast_string(&self) -> &StringObj {
+    if let HeapString(str_ptr) = self {
+      unsafe { &**str_ptr }
+    } else {
+      panic!("Failed to cast heap object to string")
+    }
+  }
+}
+
 impl Freeable for HeapObject {
   fn free(&mut self) {
     let (ptr, layout) = match &self {

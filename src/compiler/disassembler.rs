@@ -1,5 +1,5 @@
 use crate::runtime::chunk::Chunk;
-use crate::runtime::gc_object::GcObject;
+use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap_object::HeapObject::HeapFunction;
 use crate::runtime::value::Value::Reference;
 
@@ -67,7 +67,7 @@ fn closure_instruction(op_code: &OpCode, chunk: &Chunk, offset: usize) -> usize 
   let value_str = value_obj.stringify();
   println!("{op_code:<16?} {constant_index:>4} {value_str}");
 
-  if let Reference(gc_ptr) = value_obj
+  if let Reference(GcPtr(gc_ptr)) = value_obj
     && let GcObject { object, .. } = unsafe { &**gc_ptr }
     && let HeapFunction(function_obj_ptr) = object
   {

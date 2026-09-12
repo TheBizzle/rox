@@ -1,4 +1,4 @@
-use super::gc_object::GcObject;
+use super::gc_object::GcPtr;
 use super::heap_object::HeapObject::{
   HeapBoundMethod, HeapClass, HeapClosure, HeapFunction, HeapNativeFn, HeapObjInstance, HeapString,
   HeapUpvalue,
@@ -9,7 +9,7 @@ pub enum Value {
   Boolean(bool),
   Double(f64),
   Nil,
-  Reference(*mut GcObject), // TODO: Give GcObject ptr its own newtype
+  Reference(GcPtr),
 }
 
 impl Value {
@@ -20,7 +20,7 @@ impl Value {
       Self::Boolean(true) => "true".to_string(),
       Self::Boolean(false) => "false".to_string(),
       Self::Nil => "nil".to_string(),
-      Self::Reference(gc_ptr) => match unsafe { &**gc_ptr }.object {
+      Self::Reference(GcPtr(gc_ptr)) => match unsafe { &**gc_ptr }.object {
         HeapBoundMethod(bound_method_ptr) => unsafe { &*bound_method_ptr }.to_string(),
         HeapClass(class_obj_ptr) => unsafe { &*class_obj_ptr }.to_string(),
         HeapClosure(fn_obj_ptr) => unsafe { &*fn_obj_ptr }.to_string(),

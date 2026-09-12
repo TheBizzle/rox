@@ -15,6 +15,9 @@ use super::heap_object::HeapObject::{
 use super::value::Value;
 use super::value_array::ValueArray;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GcPtr(pub *mut GcObject);
+
 pub(super) enum Blackenable {
   Array(&'static ValueArray),
   Object(&'static mut GcObject),

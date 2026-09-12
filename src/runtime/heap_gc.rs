@@ -2,7 +2,7 @@ use std::ptr;
 
 use crate::core::memory::Freeable;
 
-use super::gc_object::{Blackenable, GcObject};
+use super::gc_object::{Blackenable, GcObject, GcPtr};
 use super::heap::Heap;
 use super::value::Value::{self, Reference};
 
@@ -25,7 +25,7 @@ impl Heap {
   }
 
   pub fn mark_value(&mut self, value: &Value) {
-    if let Reference(gc_ptr) = value {
+    if let Reference(GcPtr(gc_ptr)) = value {
       self.mark_object(unsafe { &mut **gc_ptr });
     }
   }

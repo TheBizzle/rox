@@ -8,7 +8,7 @@ use crate::core::memory::Freeable;
 use crate::compiler::Compiler;
 use crate::compiler::function_kind::FunctionKind::Script;
 
-use crate::runtime::gc_object::GcObject;
+use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap::Heap;
 use crate::runtime::heap_gc::DEBUG_LOG_GC;
 use crate::runtime::heap_object::{ClosureObj, HeapObject::HeapClosure, NativeFnObj};
@@ -124,11 +124,11 @@ impl VM {
   #[allow(clippy::option_if_let_else)]
   pub fn interpret_partial(&mut self, source: String) -> Interpretation {
     if let Some((_, function_gc_ptr)) = self.compiler.run(source) {
-      self.push(Reference(function_gc_ptr));
+      self.push(Reference(GcPtr(function_gc_ptr)));
 
       let (closure_ptr, closure_gc_ptr) = self.compiler.heap.allocate_closure(function_gc_ptr);
       let _ = self.pop();
-      self.push(Reference(closure_gc_ptr));
+      self.push(Reference(GcPtr(closure_gc_ptr)));
       let _ = self.call_function_for_error(closure_ptr, closure_gc_ptr, 0, &Script);
 
       self.run()

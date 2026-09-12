@@ -2,7 +2,7 @@ use crate::runtime::chunk::Chunk;
 
 use crate::parser::Parser;
 
-use crate::runtime::gc_object::GcObject;
+use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap::Heap;
 use crate::runtime::heap_object::FunctionObj::{self, MainScript, UserDefined};
 use crate::runtime::heap_object::HeapObject::HeapString;
@@ -460,7 +460,7 @@ impl Compiler {
     let (_, closure_gc_ptr) = self.end();
     let _ = self.programs.pop();
 
-    let closure = self.make_constant(Reference(closure_gc_ptr));
+    let closure = self.make_constant(Reference(GcPtr(closure_gc_ptr)));
     self.emit_bytes(Closure, closure);
 
     for (index, is_local) in pairs {
@@ -613,7 +613,7 @@ impl Compiler {
     fake_loc.start_index += 1;
     fake_loc.length -= 2;
     let (_, gc_ptr) = self.heap.copy_string(&self.parser.source, &fake_loc);
-    self.emit_constant(Reference(gc_ptr));
+    self.emit_constant(Reference(GcPtr(gc_ptr)));
   }
 
   fn parse_super(&mut self, _can_assign: bool) {
@@ -794,7 +794,7 @@ impl Compiler {
     if let Some(cached) = self.program().ident_byte_cache.get(&name_gc_ptr) {
       *cached
     } else {
-      let generated = self.make_constant(Reference(name_gc_ptr));
+      let generated = self.make_constant(Reference(GcPtr(name_gc_ptr)));
       self.program().ident_byte_cache.insert(name_gc_ptr, generated);
       generated
     }
