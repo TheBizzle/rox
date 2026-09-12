@@ -10,8 +10,6 @@ use super::opcode::OpCode::{
   Subtract, SuperInvoke, True,
 };
 
-// TODO: Does this file really belong in `compiler`?
-
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {
   println!("== {name} ==");
 
