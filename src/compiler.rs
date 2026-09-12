@@ -83,7 +83,7 @@ impl Compiler {
   }
 
   pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {
-    let script = MainScript { arity: 0, chunk: Chunk::default(), upvalue_count: 0 };
+    let script = MainScript { chunk: Chunk::default(), upvalue_count: 0 };
     self.programs = vec![Program::new(self.heap.allocate_function(script), Script)];
 
     self.parser = Parser::new(source);

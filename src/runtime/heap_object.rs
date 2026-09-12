@@ -188,7 +188,7 @@ impl Freeable for ClosureObj {
 #[derive(Eq, PartialEq)]
 #[repr(C)]
 pub enum FunctionObj {
-  MainScript { arity: u32, chunk: Chunk, upvalue_count: u16 },
+  MainScript { chunk: Chunk, upvalue_count: u16 },
   UserDefined { arity: u32, chunk: Chunk, name_gc_ptr: *mut GcObject, upvalue_count: u16 },
 }
 use FunctionObj::{MainScript, UserDefined};
@@ -196,7 +196,8 @@ use FunctionObj::{MainScript, UserDefined};
 impl FunctionObj {
   pub const fn arity(&self) -> u32 {
     match self {
-      MainScript { arity, .. } | UserDefined { arity, .. } => *arity,
+      MainScript { .. } => 0,
+      UserDefined { arity, .. } => *arity,
     }
   }
 
@@ -228,7 +229,10 @@ impl FunctionObj {
 
   pub const fn set_arity(&mut self, new_arity: u32) {
     match self {
-      MainScript { arity, .. } | UserDefined { arity, .. } => {
+      MainScript { .. } => {
+        panic!("Cannot set arity on main script");
+      },
+      UserDefined { arity, .. } => {
         *arity = new_arity;
       },
     }
