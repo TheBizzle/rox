@@ -201,7 +201,6 @@ impl Compiler {
     arg_count
   }
 
-  // TODO: Most/all of these functions can probably move into the parser
   fn parse_binary(&mut self, _can_assign: bool) {
     enum Bytes {
       Zero,
