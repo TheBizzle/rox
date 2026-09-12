@@ -10,8 +10,8 @@ use crate::runtime::heap_object::HeapObject::HeapString;
 use crate::parser::token::Token;
 use crate::parser::token::TokenType::{
   self, Bang, BangEqual, Class, Comma, Dot, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
-  GreaterEqual, Identifier, If, LeftBrace, LeftParen, Less, LessEqual, Minus, Nil, Number, Plus, Print,
-  Return, RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
+  GreaterEqual, If, LeftBrace, LeftParen, Less, LessEqual, Minus, Nil, Number, Plus, Print, Return,
+  RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
 };
 
 use crate::runtime::value::Value::{self, Double, Reference};
@@ -243,13 +243,7 @@ impl Compiler {
   }
 
   fn parse_class_decl(&mut self) {
-    if let Some(class_name) = self.parser.consume_dyn(
-      |x| match x {
-        Identifier(y) => Some(y.clone()),
-        _ => None,
-      },
-      "Expect class name.",
-    ) {
+    if let Some(class_name) = self.parser.consume_ident("Expect class name.") {
       let class_name_gc_ptr = {
         let loc = &self.parser.previous_token_opt.as_ref().unwrap().loc;
         self.heap.copy_string(&self.parser.source, loc).1
@@ -263,13 +257,7 @@ impl Compiler {
       self.class_contexts.push(ClassContext { has_superclass: false });
 
       if self.token_is_a(&Less) {
-        if let Some(superclass_name) = self.parser.consume_dyn(
-          |x| match x {
-            Identifier(y) => Some(y.clone()),
-            _ => None,
-          },
-          "Expect superclass name.",
-        ) {
+        if let Some(superclass_name) = self.parser.consume_ident("Expect superclass name.") {
           self.make_named_variable(false); // Load superclass
 
           if class_name == superclass_name {
@@ -331,13 +319,7 @@ impl Compiler {
   }
 
   fn parse_dot(&mut self, can_assign: bool) {
-    let property_opt = self.parser.consume_dyn(
-      |x| match x {
-        Identifier(y) => Some(y.clone()),
-        _ => None,
-      },
-      "Expect property name after '.'.",
-    );
+    let property_opt = self.parser.consume_ident("Expect property name after '.'.");
 
     if property_opt.is_some() {
       let name_byte = self.make_ident_constant();
@@ -514,13 +496,7 @@ impl Compiler {
   }
 
   fn parse_method(&mut self) {
-    if let Some(name) = self.parser.consume_dyn(
-      |x| match x {
-        Identifier(y) => Some(y.clone()),
-        _ => None,
-      },
-      "Expect method name.",
-    ) {
+    if let Some(name) = self.parser.consume_ident("Expect method name.") {
       let function_kind = if name == "init" { Initializer } else { Method };
 
       let name_byte = self.make_ident_constant();
@@ -624,13 +600,7 @@ impl Compiler {
 
     self.parser.consume(&Dot, "Expect '.' after 'super'.");
 
-    let method_name_opt = self.parser.consume_dyn(
-      |x| match x {
-        Identifier(y) => Some(y.clone()),
-        _ => None,
-      },
-      "Expect superclass method name.",
-    );
+    let method_name_opt = self.parser.consume_ident("Expect superclass method name.");
 
     if method_name_opt.is_some() {
       let name_byte = self.make_ident_constant();
@@ -687,13 +657,7 @@ impl Compiler {
   }
 
   fn parse_variable(&mut self, error_message: &str) -> u8 {
-    let name_opt = self.parser.consume_dyn(
-      |x| match x {
-        Identifier(y) => Some(y.clone()),
-        _ => None,
-      },
-      error_message,
-    );
+    let name_opt = self.parser.consume_ident(error_message);
 
     #[allow(clippy::option_if_let_else)]
     if let Some(name) = name_opt {

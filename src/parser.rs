@@ -6,7 +6,7 @@ use lexer::Lexer;
 pub mod token;
 use token::{
   Token,
-  TokenType::{self, Class, Eof, For, Fun, If, Print, Return, Semicolon, Var, While},
+  TokenType::{self, Class, Eof, For, Fun, Identifier, If, Print, Return, Semicolon, Var, While},
 };
 
 pub struct Parser {
@@ -59,14 +59,19 @@ impl Parser {
     }
   }
 
-  pub fn consume_dyn<T, F: FnOnce(&TokenType) -> Option<T>>(&mut self, func: F, message: &str) -> Option<T> {
-    let t_opt = func(&self.current_token_opt.as_ref().unwrap().typ);
-    if t_opt.is_some() {
-      self.advance();
+  pub fn consume_ident(&mut self, message: &str) -> Option<String> {
+    let out_opt = if let Identifier(y) = &mut self.current_token_opt.as_mut().unwrap().typ {
+      Some(std::mem::take(y))
     } else {
       self.error_at_current(message);
+      None
+    };
+
+    if out_opt.is_some() {
+      self.advance();
     }
-    t_opt
+
+    out_opt
   }
 
   pub fn synchronize(&mut self) {
