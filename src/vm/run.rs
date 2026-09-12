@@ -84,7 +84,7 @@ impl VM {
     macro_rules! read_constant {
       () => {{
         let byte = read_u8!() as usize;
-        let chunk = &mut self.frames[self.current_frame_index].closure().function().chunk();
+        let chunk = frame_mut!().closure().function().chunk();
         unsafe { ptr::read(chunk.constants.values.add(byte)) }
       }};
     }
@@ -107,6 +107,14 @@ impl VM {
       }};
     }
 
+    macro_rules! frame {
+      () => {{ &self.frames[self.current_frame_index] }};
+    }
+
+    macro_rules! frame_mut {
+      () => {{ &mut self.frames[self.current_frame_index] }};
+    }
+
     loop {
       if IS_DEBUGGING {
         print!("          ");
@@ -117,7 +125,7 @@ impl VM {
         }
         println!();
 
-        let current = &self.frames[self.current_frame_index];
+        let current = frame!();
         let chunk = current.closure().function().chunk();
         let offset = unsafe { current.inst_ptr.offset_from(chunk.op_codes).cast_unsigned() };
         disassemble_instruction(chunk, offset);
@@ -172,7 +180,7 @@ impl VM {
 
             let closure = unsafe { &*closure_ptr };
 
-            let slots_ptr = self.frames[self.current_frame_index].slots_ptr;
+            let slots_ptr = frame!().slots_ptr;
 
             for i in 0..(closure.upvalue_count as usize) {
               let is_local = read_u8!();
@@ -184,7 +192,7 @@ impl VM {
                   *closure.upvalues_ptr_ptr.add(i) = self.capture_upvalue(value_ptr);
                 }
               } else {
-                let owning_closure = self.frames[self.current_frame_index].closure();
+                let owning_closure = frame!().closure();
                 unsafe { *closure.upvalues_ptr_ptr.add(i) = *owning_closure.upvalues_ptr_ptr.add(index) };
               }
             }
@@ -235,7 +243,7 @@ impl VM {
 
         Some(GetLocal) => {
           let slot_num = read_u8!();
-          let slots_ptr = self.frames[self.current_frame_index].slots_ptr;
+          let slots_ptr = frame!().slots_ptr;
           let value = unsafe { &*slots_ptr.add(slot_num as usize) }.clone();
           push_and_win!(value)
         },
@@ -281,7 +289,7 @@ impl VM {
 
         Some(GetUpvalue) => {
           let slot = read_u8!() as usize;
-          let closure = &mut self.frames[self.current_frame_index].closure();
+          let closure = frame_mut!().closure();
           let HeapUpvalue(upvalue_ptr) = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.object else {
             panic!("Impossible for heap upvalue to be non-upvalue");
           };
@@ -320,7 +328,7 @@ impl VM {
 
         Some(Jump) => {
           let offset = read_u16!();
-          let current = &mut self.frames[self.current_frame_index];
+          let current = frame_mut!();
           unsafe {
             current.inst_ptr = current.inst_ptr.add(offset as usize);
           }
@@ -330,7 +338,7 @@ impl VM {
         Some(JumpIfFalse) => {
           let offset = read_u16!() as usize;
           let value = self.peek(0);
-          let current = &mut self.frames[self.current_frame_index];
+          let current = frame_mut!();
           if is_falsey(&value) {
             current.inst_ptr = unsafe { current.inst_ptr.add(offset) };
           }
@@ -341,7 +349,7 @@ impl VM {
 
         Some(Loop) => {
           let offset = read_u16!() as usize;
-          let current = &mut self.frames[self.current_frame_index];
+          let current = frame_mut!();
           current.inst_ptr = unsafe { current.inst_ptr.sub(offset) };
           Continue
         },
@@ -381,12 +389,12 @@ impl VM {
 
         Some(Return) => {
           let result = self.pop();
-          self.compiler.heap.close_upvalues(self.frames[self.current_frame_index].slots_ptr);
+          self.compiler.heap.close_upvalues(frame!().slots_ptr);
           if self.current_frame_index == 0 {
             let _ = self.pop();
             Done
           } else {
-            self.stack_top = self.frames[self.current_frame_index].slots_ptr;
+            self.stack_top = frame!().slots_ptr;
             self.push(result);
             self.current_frame_index -= 1;
             Continue
@@ -408,7 +416,7 @@ impl VM {
 
         Some(SetLocal) => {
           let slot_num = read_u8!();
-          let slots_ptr = self.frames[self.current_frame_index].slots_ptr;
+          let slots_ptr = frame!().slots_ptr;
           let value = self.peek(0);
           unsafe { *slots_ptr.add(slot_num as usize) = value };
           Continue
@@ -432,7 +440,7 @@ impl VM {
 
         Some(SetUpvalue) => {
           let slot = read_u8!() as usize;
-          let closure = &mut self.frames[self.current_frame_index].closure();
+          let closure = frame_mut!().closure();
           let HeapUpvalue(upvalue_ptr) = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.object else {
             panic!("Impossible for heap upvalue to be non-upvalue");
           };
