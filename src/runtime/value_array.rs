@@ -21,7 +21,7 @@ impl ValueArray {
   #[must_use]
   pub fn free(&mut self) -> &Self {
     unsafe {
-      free_array!(Value, self.values, self.capacity);
+      free_array(self.values, self.capacity);
     }
 
     self.count = 0;
@@ -42,8 +42,8 @@ impl ValueArray {
   pub fn write(&mut self, value: Value) {
     if self.capacity < self.count + 1 {
       let old_capacity = self.capacity;
-      self.capacity = next_capacity!(old_capacity);
-      self.values = unsafe { grow_array!(Value, self.values, old_capacity, self.capacity) };
+      self.capacity = next_capacity(old_capacity);
+      self.values = unsafe { grow_array(self.values, old_capacity, self.capacity) };
     }
 
     unsafe {

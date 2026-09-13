@@ -37,8 +37,8 @@ impl Chunk {
   #[must_use]
   pub fn free(&mut self) -> &Self {
     unsafe {
-      free_array!(u8, self.op_codes, self.capacity);
-      free_array!(u32, self.line_nums, self.capacity);
+      free_array(self.op_codes, self.capacity);
+      free_array(self.line_nums, self.capacity);
     }
     let _ = self.constants.free();
 
@@ -54,9 +54,9 @@ impl Chunk {
   pub fn write<T: Into<u8>>(&mut self, byte: T, line_num: u32) {
     if self.capacity < self.count + 1 {
       let old_capacity = self.capacity;
-      self.capacity = next_capacity!(old_capacity);
-      self.op_codes = unsafe { grow_array!(u8, self.op_codes, old_capacity, self.capacity) };
-      self.line_nums = unsafe { grow_array!(u32, self.line_nums, old_capacity, self.capacity) };
+      self.capacity = next_capacity(old_capacity);
+      self.op_codes = unsafe { grow_array(self.op_codes, old_capacity, self.capacity) };
+      self.line_nums = unsafe { grow_array(self.line_nums, old_capacity, self.capacity) };
     }
 
     unsafe {

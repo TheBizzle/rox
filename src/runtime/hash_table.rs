@@ -69,7 +69,7 @@ impl HashTable {
     }
 
     unsafe {
-      free_array!(Cell, self.cells_ptr, self.capacity);
+      free_array(self.cells_ptr, self.capacity);
     }
 
     self.cells_ptr = new_cells_ptr;
@@ -147,7 +147,7 @@ impl HashTable {
 
   pub fn free(&mut self) {
     unsafe {
-      free_array!(Cell, self.cells_ptr, self.capacity);
+      free_array(self.cells_ptr, self.capacity);
     }
 
     self.count = 0;
@@ -184,7 +184,7 @@ impl HashTable {
   pub fn set(&mut self, key: *const GcObject, value: Value) -> bool {
     #[allow(clippy::cast_precision_loss)]
     if ((self.count + 1) as f64) > ((self.capacity as f64) * TABLE_MAX_LOAD) {
-      self.adjust_capacity(next_capacity!(self.capacity));
+      self.adjust_capacity(next_capacity(self.capacity));
     }
 
     let ptr = self.find_cell(key_as_str_ptr(key));

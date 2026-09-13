@@ -109,7 +109,7 @@ impl Heap {
     #[allow(clippy::option_if_let_else)]
     if let Some(ptr_pair) = self.find_string(ptr, length, hash) {
       unsafe {
-        free_array!(u8, ptr, length);
+        free_array(ptr, length);
       }
       ptr_pair
     } else {
