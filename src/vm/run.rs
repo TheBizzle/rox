@@ -70,7 +70,7 @@ impl VM {
 
     macro_rules! read_u8 {
       () => {{
-        let current = &mut self.frames[self.current_frame_index];
+        let current = frame_mut!();
         let byte = unsafe { *current.inst_ptr };
         current.inst_ptr = unsafe { current.inst_ptr.add(1) };
         byte
