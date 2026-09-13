@@ -17,11 +17,15 @@ use crate::runtime::value::Value::{self, Double, Reference};
 pub mod interpretation;
 
 mod call_frame;
+mod deserialize;
 mod run;
+mod serialize;
 
 use call_frame::CallFrame;
+use deserialize::deserialize;
 use interpretation::Interpretation::{self, CompilationError};
 use run::FRAMES_MAX;
+use serialize::serialize_root;
 
 const STACK_MAX: usize = FRAMES_MAX * (u8::MAX as usize + 1);
 
@@ -40,16 +44,36 @@ pub struct VM {
 }
 
 impl VM {
-  #[allow(clippy::large_stack_frames)]
   #[must_use]
   pub fn init() -> Self {
+    Self::initialize(Compiler::default())
+  }
+
+  #[must_use]
+  pub fn load_and_run(serialized: &str) -> Interpretation {
+    let mut compiler = deserialize(serialized);
+    let main_fn_gc_ptr = compiler.get_root_fn_ptr();
+    let mut this = Self::initialize(compiler);
+
+    this.push(Reference(GcPtr(main_fn_gc_ptr)));
+    let (closure_ptr, closure_gc_ptr) = this.compiler.heap.allocate_closure(main_fn_gc_ptr);
+    let _ = this.pop();
+    this.push(Reference(GcPtr(closure_gc_ptr)));
+    let _ = this.call_function_for_error(closure_ptr, closure_gc_ptr, 0, &Script);
+
+    this.run()
+  }
+
+  #[allow(clippy::large_stack_frames)]
+  #[inline]
+  fn initialize(compiler: Compiler) -> Self {
     let frames: [CallFrame; FRAMES_MAX] = array::from_fn(|_| CallFrame::default());
     let mut stack: [Value; STACK_MAX] = array::from_fn(|_| Double(0.0));
     let stack_addr = stack.as_mut_ptr();
     let stack_top = stack.as_mut_ptr();
 
     let mut this = Self {
-      compiler: Compiler::default(),
+      compiler,
       current_frame_index: 0,
       frames,
       instrs_since_last_gc: 0,
@@ -113,6 +137,13 @@ impl VM {
     } else {
       CompilationError
     }
+  }
+
+  #[must_use]
+  pub fn serialize(source: String) -> Option<String> {
+    let mut compiler = Compiler::default();
+    let (_, function_gc_ptr) = compiler.run(source)?;
+    Some(serialize_root(function_gc_ptr))
   }
 
   const fn peek(&mut self, distance: usize) -> Value {

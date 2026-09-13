@@ -1,6 +1,6 @@
-use strum::{Display, FromRepr};
+use strum::{Display, EnumString, FromRepr};
 
-#[derive(Clone, Copy, Debug, Display, FromRepr)]
+#[derive(Clone, Copy, Debug, Display, EnumString, FromRepr)]
 #[repr(u8)]
 pub enum OpCode {
   Add,

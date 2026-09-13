@@ -1,6 +1,8 @@
 use std::env;
+use std::fs;
 use std::fs::read_to_string;
 use std::io::{Write, stdin, stdout};
+use std::path::Path;
 use std::process::exit;
 
 use rox::vm::VM;
@@ -13,8 +15,11 @@ async fn main() {
   match &args[..] {
     [_] => run_repl(),
     [_, filepath] => run_file(filepath),
+    [_, flag, filepath] if flag == "--save" => save_file(Path::new(filepath)),
+    [_, flag, filepath] if flag == "--load" => load_file(Path::new(filepath)),
+    [_, flag, filepath] if flag == "--roundtrip" => roundtrip_file(Path::new(filepath)),
     _ => {
-      eprintln!("Usage: rox [path]");
+      eprintln!("Usage: rox [<path>|--save <path>|--load <path>|--roundtrip <path>]");
       exit(64)
     },
   }
@@ -60,6 +65,58 @@ fn run_file(filepath: &str) {
         CompilationError => exit(65),
         RuntimeError => exit(70),
         Success => {},
+      }
+    },
+  }
+}
+
+fn save_file(filepath: &Path) {
+  match read_to_string(filepath) {
+    Err(_) => {
+      eprintln!("Could not read file \"{}\".", filepath.display());
+      exit(74);
+    },
+    Ok(source) => {
+      let result = VM::serialize(source).expect("Cannot save bytecode for file that does not compile");
+      let new_path = filepath.with_extension("lbc");
+      fs::write(new_path, result).unwrap();
+    },
+  }
+}
+
+fn load_file(filepath: &Path) {
+  match read_to_string(filepath) {
+    Err(_) => {
+      eprintln!("Could not read file \"{}\".", filepath.display());
+      exit(74);
+    },
+    Ok(source) => {
+      let result = VM::load_and_run(&source);
+      match result {
+        CompilationError => exit(65),
+        RuntimeError => exit(70),
+        Success => {},
+      }
+    },
+  }
+}
+
+fn roundtrip_file(filepath: &Path) {
+  match read_to_string(filepath) {
+    Err(_) => {
+      eprintln!("Could not read file \"{}\".", filepath.display());
+      exit(74);
+    },
+    Ok(source) => {
+      if let Some(serialized) = VM::serialize(source) {
+        let result = VM::load_and_run(&serialized);
+        match result {
+          CompilationError => exit(65),
+          RuntimeError => exit(70),
+          Success => {},
+        }
+      } else {
+        exit(65);
       }
     },
   }

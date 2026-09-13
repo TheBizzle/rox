@@ -29,5 +29,28 @@ echo "=== Lox test suite ==="
   dart tool/bin/test.dart clox --interpreter "$LOX"
 )
 
+echo "=== Lox test suite (roundtripped) ==="
+(
+  ROUNDTRIP_WRAPPER=$(mktemp)
+  trap 'rm -f "$ROUNDTRIP_WRAPPER"' EXIT
+
+  cat > "$ROUNDTRIP_WRAPPER" <<EOF
+#!/bin/sh
+exec "$LOX" --roundtrip "\$@"
+EOF
+  chmod +x "$ROUNDTRIP_WRAPPER"
+
+  cd ./mothership/ || exit 1
+  dart tool/bin/test.dart clox --interpreter "$ROUNDTRIP_WRAPPER"
+)
+
+echo "=== Lox benchmark suite (roundtripped) ==="
+(
+  for file in ./mothership/test/benchmark/*.lox; do
+    [ -f "$file" ] || continue
+    "$LOX" --roundtrip "$file"
+  done
+)
+
 echo ""
 echo "All checks passed."

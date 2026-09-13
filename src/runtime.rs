@@ -6,7 +6,7 @@ pub mod heap_gc;
 pub mod heap_object;
 pub mod opcode;
 pub mod value;
+pub mod value_array;
 
 mod hash_table;
 mod heap_allocate;
-mod value_array;

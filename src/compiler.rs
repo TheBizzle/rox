@@ -64,6 +64,10 @@ impl Default for Compiler {
 }
 
 impl Compiler {
+  pub fn get_root_fn_ptr(&mut self) -> *mut GcObject {
+    self.program_at(0).function_gc_ptr
+  }
+
   pub fn mark_roots(&mut self) {
     for program in self.programs.iter().rev() {
       let function_gc = unsafe { &mut *program.function_gc_ptr };
@@ -153,6 +157,16 @@ impl Compiler {
     }
 
     self.emit_opcode(ReturnCode);
+  }
+
+  pub fn import_constants(&mut self, values: Vec<Value>) {
+    for value in values {
+      self.make_constant(value);
+    }
+  }
+
+  pub fn import_byte(&mut self, byte: Byte, line_number: u32) {
+    self.program().chunk().write(byte, line_number);
   }
 
   fn make_constant(&mut self, value: Value) -> u8 {
