@@ -6,6 +6,7 @@ use std::slice;
 use crate::compiler::disassembler::disassemble_instruction;
 use crate::compiler::function_kind::FunctionKind::{self, Function, Method, Script};
 
+use crate::runtime::byte::Byte::Named;
 use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap_gc::DEBUG_STRESS_GC;
 use crate::runtime::heap_object::FunctionObj::{MainScript, UserDefined};
@@ -17,8 +18,8 @@ use crate::runtime::heap_object::{
   BoundMethodObj, ClassObj, ClosureObj, NativeFnObj, ObjInstanceObj, StringObj, UpvalueObj, objs_are_equal,
 };
 
-use crate::compiler::opcode::OpCode::{
-  self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
+use crate::runtime::opcode::OpCode::{
+  Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
   GetLocal, GetProperty, GetSuper, GetUpvalue, Greater, Inherit, Invoke, Jump, JumpIfFalse, Less, Loop,
   Method as MethodCode, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty,
   SetUpvalue, Subtract, SuperInvoke, True,
@@ -71,7 +72,7 @@ impl VM {
     macro_rules! read_u8 {
       () => {{
         let current = frame_mut!();
-        let byte = unsafe { *current.inst_ptr };
+        let byte = unsafe { *current.inst_ptr }.as_u8();
         current.inst_ptr = unsafe { current.inst_ptr.add(1) };
         byte
       }};
@@ -131,346 +132,351 @@ impl VM {
         disassemble_instruction(chunk, offset);
       }
 
-      let ordinal = read_u8!();
+      let byte = {
+        let current = frame_mut!();
+        let b = unsafe { &*current.inst_ptr };
+        current.inst_ptr = unsafe { current.inst_ptr.add(1) };
+        b
+      };
 
-      let progress_state = match OpCode::from_repr(ordinal) {
-        Some(Add) => {
-          let a = self.peek(1);
-          let b = self.peek(0);
+      let progress_state = if let Named(opcode) = byte {
+        match opcode {
+          Add => {
+            let a = self.peek(1);
+            let b = self.peek(0);
 
-          match (a, b) {
-            (Double(x), Double(y)) => {
-              let _ = self.pop();
-              let _ = self.pop();
-              push_and_win!(Double(x + y))
-            },
-            #[allow(irrefutable_let_patterns)]
-            (Reference(GcPtr(x)), Reference(GcPtr(y)))
-              if let GcObject { object: HeapString(str1), .. } = unsafe { &*x }
-                && let GcObject { object: HeapString(str2), .. } = unsafe { &*y } =>
+            match (a, b) {
+              (Double(x), Double(y)) => {
+                let _ = self.pop();
+                let _ = self.pop();
+                push_and_win!(Double(x + y))
+              },
+              #[allow(irrefutable_let_patterns)]
+              (Reference(GcPtr(x)), Reference(GcPtr(y)))
+                if let GcObject { object: HeapString(str1), .. } = unsafe { &*x }
+                  && let GcObject { object: HeapString(str2), .. } = unsafe { &*y } =>
+              {
+                let _ = self.pop();
+                let _ = self.pop();
+                push_and_win!(Reference(GcPtr(self.compiler.heap.concatenate_strings(*str1, *str2).1)))
+              },
+              _ => runtime_error!("Operands must be two numbers or two strings."),
+            }
+          },
+
+          Class => {
+            let (_, name_gc_ptr) = read_string!();
+            let x = self.compiler.heap.allocate_class(ClassObj::new(name_gc_ptr));
+            push_and_win!(Reference(GcPtr(x)))
+          },
+
+          CloseUpvalue => {
+            self.compiler.heap.close_upvalues(unsafe { self.stack_top.sub(1) });
+            self.pop();
+            Continue
+          },
+
+          Closure => {
+            let constant = read_constant!();
+            if let Reference(GcPtr(fn_gc_ptr)) = constant
+              && let GcObject { object, .. } = unsafe { &*fn_gc_ptr }
+              && let HeapFunction(_) = object
             {
-              let _ = self.pop();
-              let _ = self.pop();
-              push_and_win!(Reference(GcPtr(self.compiler.heap.concatenate_strings(*str1, *str2).1)))
-            },
-            _ => runtime_error!("Operands must be two numbers or two strings."),
-          }
-        },
+              let (closure_ptr, closure_gc_ptr) = self.compiler.heap.allocate_closure(fn_gc_ptr);
+              let result = push_and_win!(Reference(GcPtr(closure_gc_ptr)));
 
-        Some(Class) => {
-          let (_, name_gc_ptr) = read_string!();
-          let x = self.compiler.heap.allocate_class(ClassObj::new(name_gc_ptr));
-          push_and_win!(Reference(GcPtr(x)))
-        },
+              let closure = unsafe { &*closure_ptr };
 
-        Some(CloseUpvalue) => {
-          self.compiler.heap.close_upvalues(unsafe { self.stack_top.sub(1) });
-          self.pop();
-          Continue
-        },
+              let slots_ptr = frame!().slots_ptr;
 
-        Some(Closure) => {
-          let constant = read_constant!();
-          if let Reference(GcPtr(fn_gc_ptr)) = constant
-            && let GcObject { object, .. } = unsafe { &*fn_gc_ptr }
-            && let HeapFunction(_) = object
-          {
-            let (closure_ptr, closure_gc_ptr) = self.compiler.heap.allocate_closure(fn_gc_ptr);
-            let result = push_and_win!(Reference(GcPtr(closure_gc_ptr)));
+              for i in 0..(closure.upvalue_count as usize) {
+                let is_local = read_u8!();
+                let index = read_u8!() as usize;
 
-            let closure = unsafe { &*closure_ptr };
-
-            let slots_ptr = frame!().slots_ptr;
-
-            for i in 0..(closure.upvalue_count as usize) {
-              let is_local = read_u8!();
-              let index = read_u8!() as usize;
-
-              if is_local == 1 {
-                unsafe {
-                  let value_ptr = slots_ptr.add(index);
-                  *closure.upvalues_ptr_ptr.add(i) = self.capture_upvalue(value_ptr);
+                if is_local == 1 {
+                  unsafe {
+                    let value_ptr = slots_ptr.add(index);
+                    *closure.upvalues_ptr_ptr.add(i) = self.capture_upvalue(value_ptr);
+                  }
+                } else {
+                  let owning_closure = frame!().closure();
+                  unsafe { *closure.upvalues_ptr_ptr.add(i) = *owning_closure.upvalues_ptr_ptr.add(index) };
                 }
-              } else {
-                let owning_closure = frame!().closure();
-                unsafe { *closure.upvalues_ptr_ptr.add(i) = *owning_closure.upvalues_ptr_ptr.add(index) };
               }
+
+              result
+            } else {
+              runtime_error!("Tried to read a function and got this: {constant:?}")
             }
+          },
 
-            result
-          } else {
-            runtime_error!("Tried to read a function and got this: {constant:?}")
-          }
-        },
+          Constant => {
+            push_and_win!(read_constant!())
+          },
 
-        Some(Constant) => {
-          push_and_win!(read_constant!())
-        },
+          DefineGlobal => {
+            let value = self.peek(0);
+            let (_, key_gc_ptr) = read_string!();
+            self.compiler.heap.globals.set(key_gc_ptr, value);
+            let _ = self.pop();
+            Continue
+          },
 
-        Some(DefineGlobal) => {
-          let value = self.peek(0);
-          let (_, key_gc_ptr) = read_string!();
-          self.compiler.heap.globals.set(key_gc_ptr, value);
-          let _ = self.pop();
-          Continue
-        },
+          Divide => binary_op!(Double, /),
 
-        Some(Divide) => binary_op!(Double, /),
+          Equal => {
+            let b = self.pop();
+            let a = self.pop();
+            push_and_win!(Boolean(values_are_equal(a, b)))
+          },
 
-        Some(Equal) => {
-          let b = self.pop();
-          let a = self.pop();
-          push_and_win!(Boolean(values_are_equal(a, b)))
-        },
+          False => push_and_win!(Boolean(false)),
 
-        Some(False) => push_and_win!(Boolean(false)),
+          FnCall => {
+            let arg_count = read_u8!();
+            let value = self.peek(arg_count as usize);
+            self.call_value_for_error(&value, arg_count).unwrap_or(Continue)
+          },
 
-        Some(FnCall) => {
-          let arg_count = read_u8!();
-          let value = self.peek(arg_count as usize);
-          self.call_value_for_error(&value, arg_count).unwrap_or(Continue)
-        },
-
-        Some(GetGlobal) => {
-          let (name, _) = read_string!();
-          if let Some(r) = self.compiler.heap.globals.get(name) {
-            let value = unsafe { &*r }.clone();
-            push_and_win!(value)
-          } else {
-            runtime_error!("Undefined variable '{}'.", name.to_text())
-          }
-        },
-
-        Some(GetLocal) => {
-          let slot_num = read_u8!();
-          let slots_ptr = frame!().slots_ptr;
-          let value = unsafe { &*slots_ptr.add(slot_num as usize) }.clone();
-          push_and_win!(value)
-        },
-
-        Some(GetProperty) => {
-          if let Reference(GcPtr(instance_gc_ptr)) = self.peek(0)
-            && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
-          {
-            let instance_obj = unsafe { &*instance_obj_ptr };
-
+          GetGlobal => {
             let (name, _) = read_string!();
-
-            if let Some(property_value) = instance_obj.fields.get(name) {
-              self.pop();
-              push_and_win!(unsafe { &*property_value }.clone())
-            } else if let Some(value_gc_ptr) = self.bind_method(instance_obj.class(), name) {
-              push_and_win!(Reference(GcPtr(value_gc_ptr)))
+            if let Some(r) = self.compiler.heap.globals.get(name) {
+              let value = unsafe { &*r }.clone();
+              push_and_win!(value)
             } else {
-              runtime_error!("Undefined property '{name}'.")
+              runtime_error!("Undefined variable '{}'.", name.to_text())
             }
-          } else {
-            runtime_error!("Only instances have properties.")
-          }
-        },
+          },
 
-        Some(GetSuper) => {
-          let (name_str, _) = read_string!();
-
-          if let Reference(GcPtr(superclass_gc_ptr)) = self.pop()
-            && let HeapClass(superclass_obj_ptr) = unsafe { &*superclass_gc_ptr }.object
-          {
-            let superclass_obj = unsafe { &*superclass_obj_ptr };
-
-            if let Some(value_gc_ptr) = self.bind_method(superclass_obj, name_str) {
-              push_and_win!(Reference(GcPtr(value_gc_ptr)))
-            } else {
-              runtime_error!("Undefined property '{name_str}'.")
-            }
-          } else {
-            runtime_error!("Only instances can use `super`.")
-          }
-        },
-
-        Some(GetUpvalue) => {
-          let slot = read_u8!() as usize;
-          let closure = frame_mut!().closure();
-          let HeapUpvalue(upvalue_ptr) = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.object else {
-            panic!("Impossible for heap upvalue to be non-upvalue");
-          };
-          let value_ptr = unsafe { &*upvalue_ptr }.value_ptr;
-          let value = unsafe { &*value_ptr }.clone();
-          push_and_win!(value)
-        },
-
-        Some(Greater) => binary_op!(Boolean, >),
-
-        Some(Inherit) => {
-          if let Reference(GcPtr(super_gc_ptr)) = self.peek(1)
-            && let HeapClass(super_class_obj_ptr) = unsafe { &*super_gc_ptr }.object
-            && let superclass = unsafe { &mut *super_class_obj_ptr }
-          {
-            if let Reference(GcPtr(sub_gc_ptr)) = self.peek(0)
-              && let HeapClass(sub_class_obj_ptr) = unsafe { &*sub_gc_ptr }.object
-              && let subclass = unsafe { &mut *sub_class_obj_ptr }
-            {
-              superclass.methods.copy_into(&mut subclass.methods);
-              self.pop();
-              Continue
-            } else {
-              runtime_error!("Subclass must be a class.")
-            }
-          } else {
-            runtime_error!("Superclass must be a class.")
-          }
-        },
-
-        Some(Invoke) => {
-          let (name_ptr, _) = read_string!();
-          let arg_count = read_u8!();
-          self.invoke(name_ptr, arg_count).unwrap_or(Continue)
-        },
-
-        Some(Jump) => {
-          let offset = read_u16!();
-          let current = frame_mut!();
-          unsafe {
-            current.inst_ptr = current.inst_ptr.add(offset as usize);
-          }
-          Continue
-        },
-
-        Some(JumpIfFalse) => {
-          let offset = read_u16!() as usize;
-          let value = self.peek(0);
-          let current = frame_mut!();
-          if is_falsey(&value) {
-            current.inst_ptr = unsafe { current.inst_ptr.add(offset) };
-          }
-          Continue
-        },
-
-        Some(Less) => binary_op!(Boolean, <),
-
-        Some(Loop) => {
-          let offset = read_u16!() as usize;
-          let current = frame_mut!();
-          current.inst_ptr = unsafe { current.inst_ptr.sub(offset) };
-          Continue
-        },
-
-        Some(MethodCode) => {
-          let (_, method_name_gc_ptr) = read_string!();
-          self.define_method(method_name_gc_ptr);
-          Continue
-        },
-
-        Some(Multiply) => binary_op!(Double, *),
-
-        Some(Negate) => {
-          if let Double(x) = self.peek(0) {
-            let _ = self.pop();
-            push_and_win!(Double(-x))
-          } else {
-            runtime_error!("Operand must be a number.")
-          }
-        },
-
-        Some(Nil) => push_and_win!(Value::Nil),
-
-        Some(Not) => {
-          push_and_win!(Boolean(is_falsey(&self.pop())))
-        },
-
-        Some(Pop) => {
-          let _ = self.pop();
-          Continue
-        },
-
-        Some(Print) => {
-          println!("{}", self.pop().stringify());
-          Continue
-        },
-
-        Some(Return) => {
-          let result = self.pop();
-          self.compiler.heap.close_upvalues(frame!().slots_ptr);
-          if self.current_frame_index == 0 {
-            let _ = self.pop();
-            Done
-          } else {
-            self.stack_top = frame!().slots_ptr;
-            self.push(result);
-            self.current_frame_index -= 1;
-            Continue
-          }
-        },
-
-        Some(SetGlobal) => {
-          let (name, name_gc_ptr) = read_string!();
-          let value = self.peek(0);
-          let is_binding_new = self.compiler.heap.globals.set(name_gc_ptr, value);
-
-          if is_binding_new {
-            self.compiler.heap.globals.delete(name);
-            runtime_error!("Undefined variable '{}'.", name.to_text())
-          } else {
-            Continue
-          }
-        },
-
-        Some(SetLocal) => {
-          let slot_num = read_u8!();
-          let slots_ptr = frame!().slots_ptr;
-          let value = self.peek(0);
-          unsafe { *slots_ptr.add(slot_num as usize) = value };
-          Continue
-        },
-
-        Some(SetProperty) => {
-          if let Reference(GcPtr(instance_gc_ptr)) = self.peek(1)
-            && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
-          {
-            let instance_obj = unsafe { &mut *instance_obj_ptr };
-            let (_, f_name_gc_ptr) = read_string!();
-            instance_obj.fields.set(f_name_gc_ptr, self.peek(0));
-
-            let value = self.pop();
-            let _ = self.pop();
+          GetLocal => {
+            let slot_num = read_u8!();
+            let slots_ptr = frame!().slots_ptr;
+            let value = unsafe { &*slots_ptr.add(slot_num as usize) }.clone();
             push_and_win!(value)
-          } else {
-            runtime_error!("Only instances have fields.")
-          }
-        },
+          },
 
-        Some(SetUpvalue) => {
-          let slot = read_u8!() as usize;
-          let closure = frame_mut!().closure();
-          let HeapUpvalue(upvalue_ptr) = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.object else {
-            panic!("Impossible for heap upvalue to be non-upvalue");
-          };
-          let value_ptr = unsafe { &*upvalue_ptr }.value_ptr;
-          let new_value = self.peek(0);
-          unsafe { *value_ptr = new_value };
-          Continue
-        },
+          GetProperty => {
+            if let Reference(GcPtr(instance_gc_ptr)) = self.peek(0)
+              && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
+            {
+              let instance_obj = unsafe { &*instance_obj_ptr };
 
-        Some(Subtract) => binary_op!(Double, -),
+              let (name, _) = read_string!();
 
-        Some(SuperInvoke) => {
-          let (name, _) = read_string!();
-          let arg_count = read_u8!();
-          let Reference(GcPtr(gc_ptr)) = self.pop() else {
-            panic!("Super-invokee value must be a reference");
-          };
-          let HeapClass(class_obj_ptr) = unsafe { &*gc_ptr }.object else {
-            panic!("Super-invokee value must be a class");
-          };
-          let class = unsafe { &*class_obj_ptr };
-          self.invoke_from_class(class, name, arg_count).unwrap_or(Continue)
-        },
+              if let Some(property_value) = instance_obj.fields.get(name) {
+                self.pop();
+                push_and_win!(unsafe { &*property_value }.clone())
+              } else if let Some(value_gc_ptr) = self.bind_method(instance_obj.class(), name) {
+                push_and_win!(Reference(GcPtr(value_gc_ptr)))
+              } else {
+                runtime_error!("Undefined property '{name}'.")
+              }
+            } else {
+              runtime_error!("Only instances have properties.")
+            }
+          },
 
-        Some(True) => push_and_win!(Boolean(true)),
+          GetSuper => {
+            let (name_str, _) = read_string!();
 
-        None => {
-          println!("Unknown instruction enum ordinal: {ordinal}");
-          exit(1);
-        },
+            if let Reference(GcPtr(superclass_gc_ptr)) = self.pop()
+              && let HeapClass(superclass_obj_ptr) = unsafe { &*superclass_gc_ptr }.object
+            {
+              let superclass_obj = unsafe { &*superclass_obj_ptr };
+
+              if let Some(value_gc_ptr) = self.bind_method(superclass_obj, name_str) {
+                push_and_win!(Reference(GcPtr(value_gc_ptr)))
+              } else {
+                runtime_error!("Undefined property '{name_str}'.")
+              }
+            } else {
+              runtime_error!("Only instances can use `super`.")
+            }
+          },
+
+          GetUpvalue => {
+            let slot = read_u8!() as usize;
+            let closure = frame_mut!().closure();
+            let HeapUpvalue(upvalue_ptr) = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.object else {
+              panic!("Impossible for heap upvalue to be non-upvalue");
+            };
+            let value_ptr = unsafe { &*upvalue_ptr }.value_ptr;
+            let value = unsafe { &*value_ptr }.clone();
+            push_and_win!(value)
+          },
+
+          Greater => binary_op!(Boolean, >),
+
+          Inherit => {
+            if let Reference(GcPtr(super_gc_ptr)) = self.peek(1)
+              && let HeapClass(super_class_obj_ptr) = unsafe { &*super_gc_ptr }.object
+              && let superclass = unsafe { &mut *super_class_obj_ptr }
+            {
+              if let Reference(GcPtr(sub_gc_ptr)) = self.peek(0)
+                && let HeapClass(sub_class_obj_ptr) = unsafe { &*sub_gc_ptr }.object
+                && let subclass = unsafe { &mut *sub_class_obj_ptr }
+              {
+                superclass.methods.copy_into(&mut subclass.methods);
+                self.pop();
+                Continue
+              } else {
+                runtime_error!("Subclass must be a class.")
+              }
+            } else {
+              runtime_error!("Superclass must be a class.")
+            }
+          },
+
+          Invoke => {
+            let (name_ptr, _) = read_string!();
+            let arg_count = read_u8!();
+            self.invoke(name_ptr, arg_count).unwrap_or(Continue)
+          },
+
+          Jump => {
+            let offset = read_u16!();
+            let current = frame_mut!();
+            unsafe {
+              current.inst_ptr = current.inst_ptr.add(offset as usize);
+            }
+            Continue
+          },
+
+          JumpIfFalse => {
+            let offset = read_u16!() as usize;
+            let value = self.peek(0);
+            let current = frame_mut!();
+            if is_falsey(&value) {
+              current.inst_ptr = unsafe { current.inst_ptr.add(offset) };
+            }
+            Continue
+          },
+
+          Less => binary_op!(Boolean, <),
+
+          Loop => {
+            let offset = read_u16!() as usize;
+            let current = frame_mut!();
+            current.inst_ptr = unsafe { current.inst_ptr.sub(offset) };
+            Continue
+          },
+
+          MethodCode => {
+            let (_, method_name_gc_ptr) = read_string!();
+            self.define_method(method_name_gc_ptr);
+            Continue
+          },
+
+          Multiply => binary_op!(Double, *),
+
+          Negate => {
+            if let Double(x) = self.peek(0) {
+              let _ = self.pop();
+              push_and_win!(Double(-x))
+            } else {
+              runtime_error!("Operand must be a number.")
+            }
+          },
+
+          Nil => push_and_win!(Value::Nil),
+
+          Not => {
+            push_and_win!(Boolean(is_falsey(&self.pop())))
+          },
+
+          Pop => {
+            let _ = self.pop();
+            Continue
+          },
+
+          Print => {
+            println!("{}", self.pop().stringify());
+            Continue
+          },
+
+          Return => {
+            let result = self.pop();
+            self.compiler.heap.close_upvalues(frame!().slots_ptr);
+            if self.current_frame_index == 0 {
+              let _ = self.pop();
+              Done
+            } else {
+              self.stack_top = frame!().slots_ptr;
+              self.push(result);
+              self.current_frame_index -= 1;
+              Continue
+            }
+          },
+
+          SetGlobal => {
+            let (name, name_gc_ptr) = read_string!();
+            let value = self.peek(0);
+            let is_binding_new = self.compiler.heap.globals.set(name_gc_ptr, value);
+
+            if is_binding_new {
+              self.compiler.heap.globals.delete(name);
+              runtime_error!("Undefined variable '{}'.", name.to_text())
+            } else {
+              Continue
+            }
+          },
+
+          SetLocal => {
+            let slot_num = read_u8!();
+            let slots_ptr = frame!().slots_ptr;
+            let value = self.peek(0);
+            unsafe { *slots_ptr.add(slot_num as usize) = value };
+            Continue
+          },
+
+          SetProperty => {
+            if let Reference(GcPtr(instance_gc_ptr)) = self.peek(1)
+              && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
+            {
+              let instance_obj = unsafe { &mut *instance_obj_ptr };
+              let (_, f_name_gc_ptr) = read_string!();
+              instance_obj.fields.set(f_name_gc_ptr, self.peek(0));
+
+              let value = self.pop();
+              let _ = self.pop();
+              push_and_win!(value)
+            } else {
+              runtime_error!("Only instances have fields.")
+            }
+          },
+
+          SetUpvalue => {
+            let slot = read_u8!() as usize;
+            let closure = frame_mut!().closure();
+            let HeapUpvalue(upvalue_ptr) = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.object else {
+              panic!("Impossible for heap upvalue to be non-upvalue");
+            };
+            let value_ptr = unsafe { &*upvalue_ptr }.value_ptr;
+            let new_value = self.peek(0);
+            unsafe { *value_ptr = new_value };
+            Continue
+          },
+
+          Subtract => binary_op!(Double, -),
+
+          SuperInvoke => {
+            let (name, _) = read_string!();
+            let arg_count = read_u8!();
+            let Reference(GcPtr(gc_ptr)) = self.pop() else {
+              panic!("Super-invokee value must be a reference");
+            };
+            let HeapClass(class_obj_ptr) = unsafe { &*gc_ptr }.object else {
+              panic!("Super-invokee value must be a class");
+            };
+            let class = unsafe { &*class_obj_ptr };
+            self.invoke_from_class(class, name, arg_count).unwrap_or(Continue)
+          },
+
+          True => push_and_win!(Boolean(true)),
+        }
+      } else {
+        println!("Unknown instruction enum ordinal: {byte:?}");
+        exit(1);
       };
 
       if DEBUG_STRESS_GC {

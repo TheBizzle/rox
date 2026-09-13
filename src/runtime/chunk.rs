@@ -2,6 +2,7 @@ use std::ptr::null_mut;
 
 use crate::core::memory::{free_array, grow_array, next_capacity};
 
+use super::byte::Byte;
 use super::value::Value;
 use super::value_array::ValueArray;
 
@@ -11,7 +12,7 @@ pub struct Chunk {
   capacity: usize,
   pub constants: ValueArray,
   pub line_nums: *mut u32,
-  pub op_codes: *mut u8,
+  pub op_codes: *mut Byte,
 }
 
 impl Chunk {
@@ -51,7 +52,7 @@ impl Chunk {
     self
   }
 
-  pub fn write<T: Into<u8>>(&mut self, byte: T, line_num: u32) {
+  pub fn write(&mut self, byte: Byte, line_num: u32) {
     if self.capacity < self.count + 1 {
       let old_capacity = self.capacity;
       self.capacity = next_capacity(old_capacity);
@@ -60,7 +61,7 @@ impl Chunk {
     }
 
     unsafe {
-      *self.op_codes.add(self.count) = byte.into();
+      *self.op_codes.add(self.count) = byte;
       *self.line_nums.add(self.count) = line_num;
     }
 

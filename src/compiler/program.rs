@@ -4,9 +4,9 @@ use crate::runtime::chunk::Chunk;
 use crate::runtime::gc_object::GcObject;
 use crate::runtime::heap_object::FunctionObj;
 use crate::runtime::heap_object::HeapObject::HeapFunction;
+use crate::runtime::opcode::OpCode::{self, CloseUpvalue, Pop};
 
 use super::function_kind::FunctionKind::{self, Initializer, Method};
-use super::opcode::OpCode::{self, CloseUpvalue, Pop};
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct Upvalue {

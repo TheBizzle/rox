@@ -1,12 +1,6 @@
 use crate::runtime::chunk::Chunk;
 
 use crate::parser::Parser;
-
-use crate::runtime::gc_object::{GcObject, GcPtr};
-use crate::runtime::heap::Heap;
-use crate::runtime::heap_object::FunctionObj::{self, MainScript, UserDefined};
-use crate::runtime::heap_object::HeapObject::HeapString;
-
 use crate::parser::token::Token;
 use crate::parser::token::TokenType::{
   self, Bang, BangEqual, Class, Comma, Dot, Else, Eof, Equal, EqualEqual, False, For, Fun, Greater,
@@ -14,24 +8,29 @@ use crate::parser::token::TokenType::{
   RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
 };
 
-use crate::runtime::value::Value::{self, Double, Reference};
+use crate::runtime::byte::Byte::{self, Named, Raw};
+use crate::runtime::gc_object::{GcObject, GcPtr};
+use crate::runtime::heap::Heap;
+use crate::runtime::heap_object::FunctionObj::{self, MainScript, UserDefined};
+use crate::runtime::heap_object::HeapObject::HeapString;
 
-pub mod disassembler;
-pub mod function_kind;
-pub mod opcode;
-pub mod program;
-
-mod precedence;
-
-use disassembler::disassemble_chunk;
-
-use opcode::OpCode::{
+use crate::runtime::opcode::OpCode::{
   self, Add, Class as ClassCode, Closure, Constant, DefineGlobal, Divide, Equal as EqualCode,
   False as FalseCode, FnCall, GetGlobal, GetLocal, GetProperty, GetSuper, GetUpvalue, Greater as GreaterCode,
   Inherit, Invoke, Jump, JumpIfFalse, Less as LessCode, Loop, Method as MethodCode, Multiply, Negate,
   Nil as NilCode, Not, Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, SetProperty,
   SetUpvalue, Subtract, SuperInvoke, True as TrueCode,
 };
+
+use crate::runtime::value::Value::{self, Double, Reference};
+
+pub mod disassembler;
+pub mod function_kind;
+pub mod program;
+
+mod precedence;
+
+use disassembler::disassemble_chunk;
 
 use precedence::{Precedence, rule_for};
 
@@ -114,14 +113,22 @@ impl Compiler {
     (self.program().function(), self.program().function_gc_ptr)
   }
 
-  fn emit_byte<T: Into<u8>>(&mut self, byte: T) {
+  fn emit_opcode(&mut self, opcode: OpCode) {
+    self.emit_byte(Named(opcode));
+  }
+
+  fn emit_raw(&mut self, num: u8) {
+    self.emit_byte(Raw(num));
+  }
+
+  fn emit_byte(&mut self, byte: Byte) {
     let line_num = self.parser.previous_token_opt.as_ref().unwrap().loc.line_num;
     self.program().chunk().write(byte, line_num);
   }
 
-  fn emit_bytes<T: Into<u8>, U: Into<u8>>(&mut self, byte1: T, byte2: U) {
-    self.emit_byte(byte1);
-    self.emit_byte(byte2);
+  fn emit_bytes(&mut self, opcode: OpCode, num: u8) {
+    self.emit_opcode(opcode);
+    self.emit_raw(num);
   }
 
   fn emit_constant(&mut self, value: Value) {
@@ -129,17 +136,17 @@ impl Compiler {
     self.emit_bytes(Constant, constant);
   }
 
-  fn emit_jump<T: Into<u8>>(&mut self, instruction: T) -> JumpTarget {
-    self.emit_byte(instruction);
-    self.emit_byte(0xff);
-    self.emit_byte(0xff);
+  fn emit_jump(&mut self, opcode: OpCode) -> JumpTarget {
+    self.emit_opcode(opcode);
+    self.emit_raw(0xff);
+    self.emit_raw(0xff);
     JumpTarget(self.program().chunk().count - 2)
   }
 
   fn emit_loop(&mut self, jump_target: &JumpTarget) {
     let JumpTarget(loop_start) = jump_target;
 
-    self.emit_byte(Loop);
+    self.emit_opcode(Loop);
 
     let offset = self.program().chunk().count - loop_start + 2;
 
@@ -147,18 +154,18 @@ impl Compiler {
       self.parser.error("Loop body too large.");
     }
 
-    self.emit_byte(u8::try_from((offset >> 8) & 0xff).unwrap());
-    self.emit_byte(u8::try_from(offset & 0xff).unwrap());
+    self.emit_raw(u8::try_from((offset >> 8) & 0xff).unwrap());
+    self.emit_raw(u8::try_from(offset & 0xff).unwrap());
   }
 
   fn emit_return(&mut self) {
     if self.program().function_kind == Initializer {
       self.emit_bytes(GetLocal, 0);
     } else {
-      self.emit_byte(NilCode);
+      self.emit_opcode(NilCode);
     }
 
-    self.emit_byte(ReturnCode);
+    self.emit_opcode(ReturnCode);
   }
 
   fn make_constant(&mut self, value: Value) -> u8 {
@@ -174,7 +181,7 @@ impl Compiler {
   fn parse_and(&mut self, _can_assign: bool) {
     let end_jt = self.emit_jump(JumpIfFalse);
 
-    self.emit_byte(Pop);
+    self.emit_opcode(Pop);
     self.parse_precedence(&Precedence::And);
 
     self.fill_in_jump_target(&end_jt);
@@ -230,8 +237,11 @@ impl Compiler {
 
     match opcodes {
       Zero => {},
-      One(opcode) => self.emit_byte(opcode),
-      Two(op1, op2) => self.emit_bytes(op1, op2),
+      One(opcode) => self.emit_opcode(opcode),
+      Two(op1, op2) => {
+        self.emit_opcode(op1);
+        self.emit_opcode(op2);
+      },
     }
   }
 
@@ -270,7 +280,7 @@ impl Compiler {
 
           self.reference_named_variable(class_name_gc_ptr, false); // Load subclass
 
-          self.emit_byte(Inherit);
+          self.emit_opcode(Inherit);
           self.class_contexts.last_mut().unwrap().has_superclass = true;
         } else {
           while !matches!(self.parser.current_token_opt.as_ref().unwrap().typ, LeftBrace) {
@@ -289,12 +299,12 @@ impl Compiler {
 
       self.parser.consume(&RightBrace, "Expect '}' after class body.");
 
-      self.emit_byte(Pop);
+      self.emit_opcode(Pop);
 
       if let Some(current_class) = self.class_contexts.last() {
         if current_class.has_superclass {
           for op_code in self.program().end_scope() {
-            self.emit_byte(op_code);
+            self.emit_opcode(op_code);
           }
         }
         self.class_contexts.pop();
@@ -330,7 +340,7 @@ impl Compiler {
       } else if self.token_is_a(&LeftParen) {
         let arg_count = self.parse_args();
         self.emit_bytes(Invoke, name_byte);
-        self.emit_byte(arg_count);
+        self.emit_raw(arg_count);
       } else {
         self.emit_bytes(GetProperty, name_byte);
       }
@@ -344,7 +354,7 @@ impl Compiler {
   fn parse_expr_stmt(&mut self) {
     self.parse_expression();
     self.parser.consume(&Semicolon, "Expect ';' after expression.");
-    self.emit_byte(Pop);
+    self.emit_opcode(Pop);
   }
 
   fn parse_for(&mut self) {
@@ -365,7 +375,7 @@ impl Compiler {
       self.parse_expression();
       self.parser.consume(&Semicolon, "Expect ';' after loop condition.");
       let _ = exit_jt_opt.insert(self.emit_jump(JumpIfFalse));
-      self.emit_byte(Pop);
+      self.emit_opcode(Pop);
     }
 
     if !self.token_is_a(&RightParen) {
@@ -373,7 +383,7 @@ impl Compiler {
       let inc_start_jt = JumpTarget(self.program().chunk().count);
 
       self.parse_expression();
-      self.emit_byte(Pop);
+      self.emit_opcode(Pop);
       self.parser.consume(&RightParen, "Expect ')' after for clauses.");
 
       self.emit_loop(&loop_start_jt);
@@ -386,11 +396,11 @@ impl Compiler {
 
     if let Some(exit_jt) = exit_jt_opt {
       self.fill_in_jump_target(&exit_jt);
-      self.emit_byte(Pop); // Discards the condition --Jason B. (8/24/26)
+      self.emit_opcode(Pop); // Discards the condition --Jason B. (8/24/26)
     }
 
     for op_code in self.program().end_scope() {
-      self.emit_byte(op_code);
+      self.emit_opcode(op_code);
     }
   }
 
@@ -445,8 +455,8 @@ impl Compiler {
     self.emit_bytes(Closure, closure);
 
     for (index, is_local) in pairs {
-      self.emit_byte(u8::from(is_local));
-      self.emit_byte(index);
+      self.emit_raw(u8::from(is_local));
+      self.emit_raw(index);
     }
   }
 
@@ -473,12 +483,12 @@ impl Compiler {
     self.parser.consume(&RightParen, "Expect ')' after condition.");
 
     let consequent_jt = self.emit_jump(JumpIfFalse);
-    self.emit_byte(Pop);
+    self.emit_opcode(Pop);
     self.parse_statement();
     let alternative_jt = self.emit_jump(Jump);
     self.fill_in_jump_target(&consequent_jt);
 
-    self.emit_byte(Pop);
+    self.emit_opcode(Pop);
     if self.token_is_a(&Else) {
       self.parse_statement();
     }
@@ -488,9 +498,9 @@ impl Compiler {
 
   fn parse_literal(&mut self, _can_assign: bool) {
     match self.parser.previous_token_opt.as_ref().unwrap().typ {
-      False => self.emit_byte(FalseCode),
-      Nil => self.emit_byte(NilCode),
-      True => self.emit_byte(TrueCode),
+      False => self.emit_opcode(FalseCode),
+      Nil => self.emit_opcode(NilCode),
+      True => self.emit_opcode(TrueCode),
       _ => {},
     }
   }
@@ -516,7 +526,7 @@ impl Compiler {
     let end_jt = self.emit_jump(Jump);
     self.fill_in_jump_target(&else_jt);
 
-    self.emit_byte(Pop);
+    self.emit_opcode(Pop);
     self.parse_precedence(&Precedence::Or);
 
     self.fill_in_jump_target(&end_jt);
@@ -555,7 +565,7 @@ impl Compiler {
       }
       self.parse_expression();
       self.parser.consume(&Semicolon, "Expect ';' after return value.");
-      self.emit_byte(ReturnCode);
+      self.emit_opcode(ReturnCode);
     }
   }
 
@@ -563,7 +573,7 @@ impl Compiler {
     if self.token_is_a(&Print) {
       self.parse_expression();
       self.parser.consume(&Semicolon, "Expect ';' after value.");
-      self.emit_byte(PrintCode);
+      self.emit_opcode(PrintCode);
     } else if self.token_is_a(&If) {
       self.parse_if_else();
     } else if self.token_is_a(&For) {
@@ -576,7 +586,7 @@ impl Compiler {
       self.program().begin_scope();
       self.parse_block();
       for op_code in self.program().end_scope() {
-        self.emit_byte(op_code);
+        self.emit_opcode(op_code);
       }
     } else {
       self.parse_expr_stmt();
@@ -610,7 +620,7 @@ impl Compiler {
         let arg_count = self.parse_args();
         self.reference_named_variable(self.heap.super_str_gc_ptr, false);
         self.emit_bytes(SuperInvoke, name_byte);
-        self.emit_byte(arg_count);
+        self.emit_raw(arg_count);
       } else {
         self.reference_named_variable(self.heap.super_str_gc_ptr, false);
         self.emit_bytes(GetSuper, name_byte);
@@ -634,10 +644,10 @@ impl Compiler {
     #[allow(clippy::match_same_arms)]
     match operator_type {
       Minus => {
-        self.emit_byte(Negate);
+        self.emit_opcode(Negate);
       },
       Bang => {
-        self.emit_byte(Not);
+        self.emit_opcode(Not);
       },
       _ => {},
     }
@@ -649,7 +659,7 @@ impl Compiler {
     if self.token_is_a(&Equal) {
       self.parse_expression();
     } else {
-      self.emit_byte(NilCode);
+      self.emit_opcode(NilCode);
     }
     self.parser.consume(&Semicolon, "Expect ';' after variable declaration.");
 
@@ -684,14 +694,14 @@ impl Compiler {
     self.parser.consume(&RightParen, "Expect ')' after condition.");
 
     let exit_jt = self.emit_jump(JumpIfFalse);
-    self.emit_byte(Pop);
+    self.emit_opcode(Pop);
     self.parse_statement();
     self.emit_loop(&loop_start_jt);
 
     // The `pop` in this chunk is the same as the one above; it's simply that we need to pop the
     // condition, whether we continue into the `while` body or not. --Jason B. (8/24/26)
     self.fill_in_jump_target(&exit_jt);
-    self.emit_byte(Pop);
+    self.emit_opcode(Pop);
   }
 
   fn add_local(&mut self, name: String) {
@@ -741,8 +751,8 @@ impl Compiler {
     }
 
     unsafe {
-      *self.program().chunk().op_codes.add(*offset) = u8::try_from((jt >> 8) & 0xff).unwrap();
-      *self.program().chunk().op_codes.add(offset + 1) = u8::try_from(jt & 0xff).unwrap();
+      *self.program().chunk().op_codes.add(*offset) = Raw(u8::try_from((jt >> 8) & 0xff).unwrap());
+      *self.program().chunk().op_codes.add(offset + 1) = Raw(u8::try_from(jt & 0xff).unwrap());
     }
   }
 

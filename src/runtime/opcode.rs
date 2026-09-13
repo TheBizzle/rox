@@ -1,6 +1,6 @@
 use strum::{Display, FromRepr};
 
-#[derive(Debug, Display, FromRepr)]
+#[derive(Clone, Copy, Debug, Display, FromRepr)]
 #[repr(u8)]
 pub enum OpCode {
   Add,
