@@ -1,5 +1,5 @@
 use std::array;
-use std::ptr::{self, null_mut};
+use std::ptr;
 use std::sync::LazyLock;
 use std::time::Instant;
 
@@ -11,43 +11,21 @@ use crate::compiler::function_kind::FunctionKind::Script;
 use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap::Heap;
 use crate::runtime::heap_gc::DEBUG_LOG_GC;
-use crate::runtime::heap_object::{ClosureObj, HeapObject::HeapClosure, NativeFnObj};
+use crate::runtime::heap_object::NativeFnObj;
 use crate::runtime::value::Value::{self, Double, Reference};
 
 pub mod interpretation;
 
+mod call_frame;
 mod run;
 
+use call_frame::CallFrame;
 use interpretation::Interpretation::{self, CompilationError};
 use run::FRAMES_MAX;
 
 const STACK_MAX: usize = FRAMES_MAX * (u8::MAX as usize + 1);
 
 static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
-
-#[derive(Debug)]
-#[allow(clippy::struct_field_names)]
-pub struct CallFrame {
-  closure_gc_ptr: *mut GcObject,
-  inst_ptr: *mut u8,
-  slots_ptr: *mut Value,
-}
-
-impl CallFrame {
-  fn closure(&self) -> &ClosureObj {
-    if let HeapClosure(closure_ptr) = unsafe { &*self.closure_gc_ptr }.object {
-      unsafe { &*closure_ptr }
-    } else {
-      panic!("VM's `closure_gc_ptr` must be a closure!");
-    }
-  }
-}
-
-impl Default for CallFrame {
-  fn default() -> Self {
-    Self { closure_gc_ptr: null_mut(), inst_ptr: null_mut(), slots_ptr: null_mut() }
-  }
-}
 
 // Need to hold onto `_stack`, so Rust doesn't overwrite its memory --Jason B. (8/16/26)
 pub struct VM {
