@@ -188,7 +188,7 @@ impl Freeable for ClosureObj {
 #[derive(Eq, PartialEq)]
 #[repr(C)]
 pub enum FunctionObj {
-  MainScript { chunk: Chunk, upvalue_count: u16 },
+  MainScript { chunk: Chunk },
   UserDefined { arity: u32, chunk: Chunk, name_gc_ptr: *mut GcObject, upvalue_count: u16 },
 }
 use FunctionObj::{MainScript, UserDefined};
@@ -215,7 +215,10 @@ impl FunctionObj {
 
   pub const fn increment_upvalue_count(&mut self) {
     match self {
-      MainScript { upvalue_count, .. } | UserDefined { upvalue_count, .. } => {
+      MainScript { .. } => {
+        panic!("Main script cannot have upvalues");
+      },
+      UserDefined { upvalue_count, .. } => {
         *upvalue_count += 1;
       },
     }
@@ -223,7 +226,8 @@ impl FunctionObj {
 
   pub const fn upvalue_count(&self) -> u16 {
     match self {
-      MainScript { upvalue_count, .. } | UserDefined { upvalue_count, .. } => *upvalue_count,
+      MainScript { .. } => 0,
+      UserDefined { upvalue_count, .. } => *upvalue_count,
     }
   }
 
