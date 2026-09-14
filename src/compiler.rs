@@ -52,16 +52,6 @@ pub struct Compiler {
   pub heap: Heap,
 }
 
-impl Compiler {
-  fn program(&mut self) -> &mut Program {
-    self.programs.last_mut().unwrap()
-  }
-
-  fn program_at(&mut self, index: usize) -> &mut Program {
-    &mut self.programs[index]
-  }
-}
-
 impl Default for Compiler {
   fn default() -> Self {
     Self {
@@ -858,5 +848,13 @@ impl Compiler {
     }
     self.parser.advance();
     true
+  }
+
+  fn program(&mut self) -> &mut Program {
+    self.programs.last_mut().unwrap()
+  }
+
+  fn program_at(&mut self, index: usize) -> &mut Program {
+    &mut self.programs[index]
   }
 }
