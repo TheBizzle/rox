@@ -54,12 +54,12 @@ pub struct Compiler {
 
 impl Default for Compiler {
   fn default() -> Self {
-    Self {
-      class_contexts: Vec::new(),
-      parser: Parser::new(String::new()),
-      programs: Vec::new(),
-      heap: Heap::new(),
-    }
+    let mut heap = Heap::new();
+
+    let script = MainScript { chunk: Chunk::default() };
+    let programs = vec![Program::new(heap.allocate_function(script), Script)];
+
+    Self { class_contexts: Vec::new(), parser: Parser::new(String::new()), programs, heap }
   }
 }
 
@@ -72,9 +72,6 @@ impl Compiler {
   }
 
   pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {
-    let script = MainScript { chunk: Chunk::default() };
-    self.programs = vec![Program::new(self.heap.allocate_function(script), Script)];
-
     self.parser = Parser::new(source);
     self.parser.advance();
 
