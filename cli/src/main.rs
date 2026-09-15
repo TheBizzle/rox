@@ -5,8 +5,8 @@ use std::io::{Write, stdin, stdout};
 use std::path::Path;
 use std::process::exit;
 
-use rox::vm::VM;
-use rox::vm::interpretation::Interpretation::{CompilationError, RuntimeError, Success};
+use rox_lib::vm::VM;
+use rox_lib::vm::interpretation::Interpretation::{CompilationError, RuntimeError, Success};
 
 #[tokio::main]
 async fn main() {

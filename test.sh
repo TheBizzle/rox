@@ -18,6 +18,9 @@ cargo check "${cargo_args[@]}"
 echo "=== Clippy ==="
 cargo clippy --all-targets "${cargo_args[@]}" -- -D warnings
 
+echo "=== Compile ==="
+cargo build "${cargo_args[@]}"
+
 echo "=== Tests ==="
 cargo test "${cargo_args[@]}"
 

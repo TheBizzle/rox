@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-  use rox::vm::VM;
-  use rox::vm::interpretation::Interpretation::Success;
+  use rox_lib::vm::VM;
+  use rox_lib::vm::interpretation::Interpretation::Success;
 
   #[tokio::test]
   async fn can_reference_the_same_variable_300_times() {
