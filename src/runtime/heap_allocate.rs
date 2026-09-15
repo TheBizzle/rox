@@ -107,11 +107,11 @@ impl Heap {
 
     let hash = hash_string(ptr, length);
     #[allow(clippy::option_if_let_else)]
-    if let Some(ptr_pair) = self.find_string(ptr, length, hash) {
+    if let Some((ptr1, ptr2)) = self.strings.find_string(ptr, length, hash) {
       unsafe {
         free_array(ptr, length);
       }
-      ptr_pair
+      (ptr1.cast_mut(), ptr2.cast_mut())
     } else {
       self.allocate_string(ptr, length, hash)
     }
@@ -124,8 +124,8 @@ impl Heap {
   pub fn copy_string_simple(&mut self, substring: &str, length: usize) -> (StrPtr, GcPtr) {
     let hash = hash_string(substring.as_ptr(), length);
     #[allow(clippy::option_if_let_else)]
-    if let Some(ptr_pair) = self.find_string(substring.as_ptr(), length, hash) {
-      ptr_pair
+    if let Some((ptr1, ptr2)) = self.strings.find_string(substring.as_ptr(), length, hash) {
+      (ptr1.cast_mut(), ptr2.cast_mut())
     } else {
       let layout = Layout::array::<u8>(length).unwrap();
       let ptr = unsafe { alloc(layout) };
@@ -138,16 +138,6 @@ impl Heap {
       }
       self.allocate_string(ptr, length, hash)
     }
-  }
-
-  fn find_string(&self, chars_ptr: *const u8, length: usize, hash: u32) -> Option<(StrPtr, GcPtr)> {
-    self.strings.find_string(chars_ptr, length, hash).map(|interned_gc_ptr| {
-      if let HeapString(str_ptr) = unsafe { &*interned_gc_ptr }.object {
-        (str_ptr, interned_gc_ptr.cast_mut())
-      } else {
-        panic!("The only objects that tables can use as keys are strings")
-      }
-    })
   }
 }
 

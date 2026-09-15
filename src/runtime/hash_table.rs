@@ -22,7 +22,7 @@ pub struct HashTable {
 enum Cell {
   NeverFilled,
   Tombstone,
-  Entry { key: *const GcObject, value: Value },
+  Entry { key: *const GcObject, key_str: *const StringObj, value: Value },
 }
 use Cell::{Entry, NeverFilled, Tombstone};
 
@@ -34,7 +34,7 @@ impl HashTable {
   #[allow(unused)]
   pub fn copy_into(&mut self, target: &mut Self) {
     for i in 0..self.capacity {
-      if let Entry { key, value } = unsafe { &*self.cells_ptr.add(i) } {
+      if let Entry { key, value, .. } = unsafe { &*self.cells_ptr.add(i) } {
         target.set(*key, value.clone());
       }
     }
@@ -59,8 +59,8 @@ impl HashTable {
     self.count = 0;
     for i in 0..self.capacity {
       let ptr = unsafe { self.cells_ptr.add(i) };
-      if let Entry { key, .. } = unsafe { &*ptr } {
-        let cell_ptr = find_cell(new_cells_ptr, capacity, key_as_str_ptr(*key));
+      if let Entry { key_str, .. } = unsafe { &*ptr } {
+        let cell_ptr = find_cell(new_cells_ptr, capacity, *key_str);
         unsafe {
           cell_ptr.write(ptr.read());
         }
@@ -98,11 +98,11 @@ impl HashTable {
     for entry in slice {
       if let Entry { key, .. } = entry {
         let key_gc = unsafe { &**key };
-        let HeapString(key_str_ptr) = key_gc.object else {
-          panic!("Table key must be a string!");
-        };
-        let key_obj = unsafe { &*key_str_ptr };
         if !key_gc.is_marked {
+          let HeapString(key_str_ptr) = key_gc.object else {
+            panic!("Table key must be a string!");
+          };
+          let key_obj = unsafe { &*key_str_ptr };
           self.delete(key_obj);
         }
       }
@@ -114,7 +114,9 @@ impl HashTable {
     find_cell(self.cells_ptr, self.capacity, key_ptr)
   }
 
-  pub fn find_string(&self, chars: *const u8, length: usize, hash: u32) -> Option<*const GcObject> {
+  pub fn find_string(
+    &self, chars: *const u8, length: usize, hash: u32,
+  ) -> Option<(*const StringObj, *const GcObject)> {
     if self.count == 0 {
       None
     } else {
@@ -124,10 +126,9 @@ impl HashTable {
           NeverFilled => {
             return None;
           },
-          Entry { key: key_ptr, .. }
+          Entry { key: key_ptr, key_str, .. }
             if {
-              let str_ptr = key_as_str_ptr(*key_ptr);
-              let key = unsafe { &*str_ptr };
+              let key = unsafe { &**key_str };
               key.length == length && key.hash == hash && {
                 let a = unsafe { from_raw_parts(key.chars, key.length) };
                 let b = unsafe { from_raw_parts(chars, length) };
@@ -135,7 +136,7 @@ impl HashTable {
               }
             } =>
           {
-            return Some(*key_ptr);
+            return Some((*key_str, *key_ptr));
           },
           _ => {
             index = (index + 1) & (self.capacity - 1);
@@ -176,7 +177,7 @@ impl HashTable {
     };
 
     cells.filter_map(|cell| match cell {
-      Cell::Entry { key, value } => Some((unsafe { &mut *(*key).cast_mut() }, value)),
+      Cell::Entry { key, value, .. } => Some((unsafe { &mut *(*key).cast_mut() }, value)),
       _ => None,
     })
   }
@@ -187,7 +188,11 @@ impl HashTable {
       self.adjust_capacity(next_capacity(self.capacity));
     }
 
-    let ptr = self.find_cell(key_as_str_ptr(key));
+    let HeapString(key_str) = unsafe { &*key }.object else {
+      panic!("The only objects that tables can use as keys are strings")
+    };
+
+    let ptr = self.find_cell(key_str);
 
     let is_new = match unsafe { &*ptr } {
       Entry { .. } => false,
@@ -199,7 +204,7 @@ impl HashTable {
     };
 
     unsafe {
-      ptr.write(Entry { key, value });
+      ptr.write(Entry { key, key_str, value });
     }
 
     is_new
@@ -218,7 +223,7 @@ fn find_cell(entry_opts: *mut Cell, capacity: usize, key_ptr: *const StringObj) 
     let cell = unsafe { &*ptr };
 
     match cell {
-      Entry { key, .. } if key_as_str_ptr(*key) == key_ptr => {
+      Entry { key_str, .. } if key_str == &key_ptr => {
         return ptr;
       },
       Entry { .. } => {
@@ -232,15 +237,5 @@ fn find_cell(entry_opts: *mut Cell, capacity: usize, key_ptr: *const StringObj) 
         return last_tombstone_ptr_opt.unwrap_or(ptr);
       },
     }
-  }
-}
-
-// TODO: Move to GC
-fn key_as_str_ptr(key: *const GcObject) -> *const StringObj {
-  match unsafe { &*key }.object {
-    HeapString(str_key) => str_key,
-    _ => {
-      panic!("The only objects that tables can use as keys are strings")
-    },
   }
 }
