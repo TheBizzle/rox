@@ -108,7 +108,6 @@ impl Parser {
     } else {
       self.lexer.get_line_num()
     };
-    // TODO: Print out elsewhere
     eprint!("[line {line_num}] Error");
 
     if let Some(Token { loc, typ }) = token_opt {
