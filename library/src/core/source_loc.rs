@@ -8,6 +8,7 @@ pub struct SourceLoc {
 }
 
 impl SourceLoc {
+  #[must_use]
   pub fn extract(&self, source: &str) -> String {
     source.chars().skip(self.start_index as usize).take(self.length as usize).collect::<String>()
   }

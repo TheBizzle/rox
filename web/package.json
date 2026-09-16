@@ -1,0 +1,19 @@
+{
+  "name": "wasm_harness_server",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Runs the official craftinginterpreters Lox test suite against the rox Wasm build.",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "node dist/index.js",
+    "test:dev": "tsx src/index.ts",
+    "bench": "node dist/benchmark/index.js",
+    "bench:dev": "tsx src/benchmark/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0"
+  }
+}

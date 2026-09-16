@@ -15,7 +15,7 @@ x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x;
 x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x;
 x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x; x;";
 
-    let result = VM::interpret(code.to_string());
+    let (result, _) = VM::interpret(code.to_string());
 
     assert!(result == Success);
   }
@@ -87,12 +87,12 @@ print outer_outer.my_method();
 
     let mut vm = VM::init();
 
-    let result1 = vm.interpret_partial(setup_code.to_string());
+    let (result1, _) = vm.interpret_partial(setup_code.to_string());
     assert!(result1 == Success);
 
     vm.collect_garbage();
 
-    let result2 = vm.interpret_partial(after_code.to_string());
+    let (result2, _) = vm.interpret_partial(after_code.to_string());
     assert!(result2 == Success);
   }
 
@@ -104,7 +104,7 @@ class Y < X {}
 for (var i = 0; i < 1; i = i + 1) {}
 ";
 
-    let result = VM::interpret(code.to_string());
+    let (result, _) = VM::interpret(code.to_string());
 
     assert!(result == Success);
   }

@@ -1,4 +1,7 @@
+use std::mem::take;
+
 use crate::core::error::LexerError::{UnexpectedToken, UnterminatedString};
+use crate::core::output::Output::{self, StdErr, StdErrLn, StdOut, StdOutLn};
 
 mod lexer;
 use lexer::Lexer;
@@ -16,6 +19,7 @@ pub struct Parser {
   pub had_error: bool,
   pub is_panicking: bool,
   pub source: String,
+  wasm_output: Vec<Output>,
 }
 
 impl Parser {
@@ -28,6 +32,7 @@ impl Parser {
       had_error: false,
       is_panicking: false,
       source,
+      wasm_output: Vec::new(),
     }
   }
 
@@ -61,7 +66,7 @@ impl Parser {
 
   pub fn consume_ident(&mut self, message: &str) -> Option<String> {
     let out_opt = if let Identifier(y) = &mut self.current_token_opt.as_mut().unwrap().typ {
-      Some(std::mem::take(y))
+      Some(take(y))
     } else {
       self.error_at_current(message);
       None
@@ -88,6 +93,23 @@ impl Parser {
     }
   }
 
+  pub fn push_output(&mut self, output: Output) {
+    if cfg!(target_arch = "wasm32") {
+      self.wasm_output.push(output);
+    } else {
+      match output {
+        StdErr(s) => eprint!("{s}"),
+        StdErrLn(s) => eprintln!("{s}"),
+        StdOut(s) => print!("{s}"),
+        StdOutLn(s) => println!("{s}"),
+      }
+    }
+  }
+
+  pub fn take_wasm_output(&mut self) -> Vec<Output> {
+    take(&mut self.wasm_output)
+  }
+
   pub fn error_at_current(&mut self, message: &str) {
     self.error_at(self.current_token_opt.clone().as_ref(), message);
   }
@@ -108,20 +130,20 @@ impl Parser {
     } else {
       self.lexer.get_line_num()
     };
-    eprint!("[line {line_num}] Error");
+    self.push_output(StdErr(format!("[line {line_num}] Error")));
 
     if let Some(Token { loc, typ }) = token_opt {
       match typ {
         Eof => {
-          eprint!(" at end");
+          self.push_output(StdErr(" at end".to_string()));
         },
         _ => {
-          eprint!(" at '{}'", loc.extract(&self.source));
+          self.push_output(StdErr(format!(" at '{}'", loc.extract(&self.source))));
         },
       }
     }
 
-    eprintln!(": {message}");
+    self.push_output(StdErrLn(format!(": {message}")));
     self.had_error = true;
   }
 }

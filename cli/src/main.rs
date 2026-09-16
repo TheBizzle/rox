@@ -58,14 +58,10 @@ fn run_file(filepath: &str) {
       eprintln!("Could not read file \"{filepath}\".");
       exit(74);
     },
-    Ok(source) => {
-      let result = VM::interpret(source);
-
-      match result {
-        CompilationError => exit(65),
-        RuntimeError => exit(70),
-        Success => {},
-      }
+    Ok(source) => match VM::interpret(source).0 {
+      CompilationError => exit(65),
+      RuntimeError => exit(70),
+      Success => {},
     },
   }
 }
@@ -90,13 +86,10 @@ fn load_file(filepath: &Path) {
       eprintln!("Could not read file \"{}\".", filepath.display());
       exit(74);
     },
-    Ok(source) => {
-      let result = VM::load_and_run(&source);
-      match result {
-        CompilationError => exit(65),
-        RuntimeError => exit(70),
-        Success => {},
-      }
+    Ok(source) => match VM::load_and_run(&source).0 {
+      CompilationError => exit(65),
+      RuntimeError => exit(70),
+      Success => {},
     },
   }
 }
@@ -108,9 +101,8 @@ fn roundtrip_file(filepath: &Path) {
       exit(74);
     },
     Ok(source) => {
-      if let Some(serialized) = VM::serialize(source) {
-        let result = VM::load_and_run(&serialized);
-        match result {
+      if let Ok(serialized) = VM::serialize(source) {
+        match VM::load_and_run(&serialized).0 {
           CompilationError => exit(65),
           RuntimeError => exit(70),
           Success => {},

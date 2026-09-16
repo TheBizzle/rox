@@ -15,9 +15,20 @@ categories = ["development-tools"]
 
 publish = false
 
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 strum = { version = "0.28", features = ["derive"] }
 tokio = { version = "1.52.3", features = [] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+wasm-bindgen = "0.2.128"
+web-time = "1"
 
 [lints.rust]
 unsafe_code = "allow"

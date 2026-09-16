@@ -3,4 +3,7 @@
 /benchmark/highcharts.js
 /benchmark/history.json
 
+dist/
+node_modules/
+pkg/
 target/

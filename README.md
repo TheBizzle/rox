@@ -40,6 +40,10 @@ cd ..
 ./test.sh
 ```
 
+## WebAssembly
+
+There is also a conversion of the project to run in WebAssembly.  Most code for that is in the `web` directory.  The `web-test.sh` script can carry out the whole process of enabling Wasm support, outputting the project as Wasm, and then running the tests and benchmarks in Wasm.
+
 ## License
 
 [Public domain / CC0-1.0](https://github.com/TheBizzle/rox/blob/main/LICENSE.txt)

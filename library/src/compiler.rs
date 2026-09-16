@@ -1,4 +1,4 @@
-use crate::runtime::chunk::Chunk;
+use crate::core::output::Output;
 
 use crate::parser::Parser;
 use crate::parser::token::Token;
@@ -9,6 +9,7 @@ use crate::parser::token::TokenType::{
 };
 
 use crate::runtime::byte::Byte::{self, Named, Raw};
+use crate::runtime::chunk::Chunk;
 use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap::Heap;
 use crate::runtime::heap_object::FunctionObj::{self, MainScript, UserDefined};
@@ -73,6 +74,14 @@ impl Compiler {
       let function_gc = unsafe { &mut *program.function_gc_ptr };
       self.heap.mark_object(function_gc);
     }
+  }
+
+  pub fn push_output(&mut self, output: Output) {
+    self.parser.push_output(output);
+  }
+
+  pub fn take_wasm_output(&mut self) -> Vec<Output> {
+    self.parser.take_wasm_output()
   }
 
   pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {

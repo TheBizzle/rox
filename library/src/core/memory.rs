@@ -4,6 +4,7 @@ use std::ops::Mul;
 use std::ptr::null_mut;
 
 #[inline]
+#[allow(clippy::missing_panics_doc, clippy::missing_safety_doc)]
 pub unsafe fn free_array<T, U: Into<usize>>(pointer: *mut T, old_count: U) -> *mut T {
   let old_count = old_count.into();
   if !pointer.is_null() {
@@ -16,6 +17,7 @@ pub unsafe fn free_array<T, U: Into<usize>>(pointer: *mut T, old_count: U) -> *m
 }
 
 #[inline]
+#[allow(clippy::missing_panics_doc, clippy::missing_safety_doc)]
 pub unsafe fn grow_array<T, U: Into<usize>>(pointer: *mut T, old_count: U, new_count: U) -> *mut T {
   let old_count = old_count.into();
   let new_count = new_count.into();

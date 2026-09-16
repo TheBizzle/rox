@@ -1,9 +1,14 @@
 use std::array;
 use std::ptr;
 use std::sync::LazyLock;
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use crate::core::memory::Freeable;
+use crate::core::output::Output;
 
 use crate::compiler::Compiler;
 use crate::compiler::function_kind::FunctionKind::Script;
@@ -50,7 +55,7 @@ impl VM {
   }
 
   #[must_use]
-  pub fn load_and_run(serialized: &str) -> Interpretation {
+  pub fn load_and_run(serialized: &str) -> (Interpretation, Vec<Output>) {
     let mut compiler = deserialize(serialized);
     let main_fn_gc_ptr = compiler.get_root_fn_ptr();
     let mut this = Self::initialize(compiler);
@@ -119,12 +124,12 @@ impl VM {
   }
 
   #[must_use]
-  pub fn interpret(source: String) -> Interpretation {
+  pub fn interpret(source: String) -> (Interpretation, Vec<Output>) {
     Self::init().interpret_partial(source)
   }
 
   #[allow(clippy::option_if_let_else)]
-  pub fn interpret_partial(&mut self, source: String) -> Interpretation {
+  pub fn interpret_partial(&mut self, source: String) -> (Interpretation, Vec<Output>) {
     if let Some((_, function_gc_ptr)) = self.compiler.run(source) {
       self.push(Reference(GcPtr(function_gc_ptr)));
 
@@ -135,15 +140,19 @@ impl VM {
 
       self.run()
     } else {
-      CompilationError
+      (CompilationError, self.compiler.take_wasm_output())
     }
   }
 
-  #[must_use]
-  pub fn serialize(source: String) -> Option<String> {
+  /// # Errors
+  /// When there was a compilation error
+  pub fn serialize(source: String) -> Result<String, Vec<Output>> {
     let mut compiler = Compiler::default();
-    let (_, function_gc_ptr) = compiler.run(source)?;
-    Some(serialize_root(function_gc_ptr))
+    if let Some((_, function_gc_ptr)) = compiler.run(source) {
+      Ok(serialize_root(function_gc_ptr))
+    } else {
+      Err(compiler.take_wasm_output())
+    }
   }
 
   const fn peek(&mut self, distance: usize) -> Value {

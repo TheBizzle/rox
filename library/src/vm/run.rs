@@ -3,6 +3,8 @@ use std::process::exit;
 use std::ptr;
 use std::slice;
 
+use crate::core::output::Output::{self, StdErrLn, StdOutLn};
+
 use crate::compiler::disassembler::disassemble_instruction;
 use crate::compiler::function_kind::FunctionKind::{self, Function, Method, Script};
 
@@ -43,7 +45,7 @@ use ProgressState::{Continue, Done, Error};
 
 impl VM {
   #[allow(clippy::too_many_lines)]
-  pub(super) fn run(&mut self) -> Interpretation {
+  pub(super) fn run(&mut self) -> (Interpretation, Vec<Output>) {
     macro_rules! runtime_error {
       ($($arg: tt)*) => {{
         self.runtime_error_impl(format_args!($($arg)*));
@@ -390,7 +392,8 @@ impl VM {
           },
 
           Print => {
-            println!("{}", self.pop().stringify());
+            let s = self.pop().stringify();
+            self.compiler.push_output(StdOutLn(s));
             Continue
           },
 
@@ -475,7 +478,7 @@ impl VM {
           True => push_and_win!(Boolean(true)),
         }
       } else {
-        println!("Unknown instruction enum ordinal: {byte:?}");
+        self.compiler.push_output(StdOutLn(format!("Unknown instruction enum ordinal: {byte:?}")));
         exit(1);
       };
 
@@ -490,10 +493,10 @@ impl VM {
 
       match progress_state {
         Error => {
-          return RuntimeError;
+          return (RuntimeError, self.compiler.take_wasm_output());
         },
         Done => {
-          return Success;
+          return (Success, self.compiler.take_wasm_output());
         },
         Continue => {},
       }
@@ -632,7 +635,7 @@ impl VM {
   }
 
   fn runtime_error_impl(&mut self, args: Arguments) {
-    eprintln!("{args}");
+    self.compiler.push_output(StdErrLn(format!("{args}")));
 
     for i in (0..=self.current_frame_index).rev() {
       let frame = &mut self.frames[i];
@@ -651,7 +654,7 @@ impl VM {
       };
 
       let line_num = unsafe { &*function.chunk().line_nums.add(instruction) };
-      eprintln!("[line {line_num}] in {suffix}");
+      self.compiler.push_output(StdErrLn(format!("[line {line_num}] in {suffix}")));
     }
 
     self.reset_stack();
