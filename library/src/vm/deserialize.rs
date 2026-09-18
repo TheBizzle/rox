@@ -1,8 +1,9 @@
+use crate::core::opcode::OpCode;
+
 use crate::runtime::byte::Byte::{Named, Raw};
 use crate::runtime::chunk::Chunk;
 use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap_object::FunctionObj::UserDefined;
-use crate::runtime::opcode::OpCode;
 use crate::runtime::value::Value::{self, Boolean, Double, Nil, Reference};
 
 use crate::compiler::Compiler;

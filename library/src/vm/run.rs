@@ -3,6 +3,13 @@ use std::process::exit;
 use std::ptr;
 use std::slice;
 
+use crate::core::opcode::OpCode::{
+  Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
+  GetLocal, GetProperty, GetSuper, GetUpvalue, Greater, Inherit, Invoke, Jump, JumpIfFalse, Less, Loop,
+  Method as MethodCode, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty,
+  SetUpvalue, Subtract, SuperInvoke, True,
+};
+
 use crate::core::output::Output::{self, StdErrLn, StdOutLn};
 
 use crate::compiler::disassembler::disassemble_instruction;
@@ -18,13 +25,6 @@ use crate::runtime::heap_object::HeapObject::{
 };
 use crate::runtime::heap_object::{
   BoundMethodObj, ClassObj, ClosureObj, NativeFnObj, ObjInstanceObj, StringObj, UpvalueObj, objs_are_equal,
-};
-
-use crate::runtime::opcode::OpCode::{
-  Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
-  GetLocal, GetProperty, GetSuper, GetUpvalue, Greater, Inherit, Invoke, Jump, JumpIfFalse, Less, Loop,
-  Method as MethodCode, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty,
-  SetUpvalue, Subtract, SuperInvoke, True,
 };
 
 use crate::runtime::value::Value::{self, Boolean, Double, Nil as NilValue, Reference};

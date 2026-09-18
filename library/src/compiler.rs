@@ -1,3 +1,11 @@
+use crate::core::opcode::OpCode::{
+  self, Add, Class as ClassCode, Closure, Constant, DefineGlobal, Divide, Equal as EqualCode,
+  False as FalseCode, FnCall, GetGlobal, GetLocal, GetProperty, GetSuper, GetUpvalue, Greater as GreaterCode,
+  Inherit, Invoke, Jump, JumpIfFalse, Less as LessCode, Loop, Method as MethodCode, Multiply, Negate,
+  Nil as NilCode, Not, Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, SetProperty,
+  SetUpvalue, Subtract, SuperInvoke, True as TrueCode,
+};
+
 use crate::core::output::Output;
 
 use crate::parser::Parser;
@@ -14,15 +22,6 @@ use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap::Heap;
 use crate::runtime::heap_object::FunctionObj::{self, MainScript, UserDefined};
 use crate::runtime::heap_object::HeapObject::HeapString;
-
-use crate::runtime::opcode::OpCode::{
-  self, Add, Class as ClassCode, Closure, Constant, DefineGlobal, Divide, Equal as EqualCode,
-  False as FalseCode, FnCall, GetGlobal, GetLocal, GetProperty, GetSuper, GetUpvalue, Greater as GreaterCode,
-  Inherit, Invoke, Jump, JumpIfFalse, Less as LessCode, Loop, Method as MethodCode, Multiply, Negate,
-  Nil as NilCode, Not, Pop, Print as PrintCode, Return as ReturnCode, SetGlobal, SetLocal, SetProperty,
-  SetUpvalue, Subtract, SuperInvoke, True as TrueCode,
-};
-
 use crate::runtime::value::Value::{self, Double, Reference};
 
 pub mod disassembler;

@@ -1,4 +1,4 @@
-use super::opcode::OpCode;
+use crate::core::opcode::OpCode;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Byte {

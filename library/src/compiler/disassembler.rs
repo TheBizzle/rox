@@ -1,15 +1,14 @@
-use crate::runtime::byte::Byte::{Named, Raw};
-use crate::runtime::chunk::Chunk;
-use crate::runtime::gc_object::{GcObject, GcPtr};
-use crate::runtime::heap_object::HeapObject::HeapFunction;
-
-use crate::runtime::opcode::OpCode::{
+use crate::core::opcode::OpCode::{
   self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
   GetLocal, GetProperty, GetSuper, GetUpvalue, Greater, Inherit, Invoke, Jump, JumpIfFalse, Less, Loop,
   Method, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue,
   Subtract, SuperInvoke, True,
 };
 
+use crate::runtime::byte::Byte::{Named, Raw};
+use crate::runtime::chunk::Chunk;
+use crate::runtime::gc_object::{GcObject, GcPtr};
+use crate::runtime::heap_object::HeapObject::HeapFunction;
 use crate::runtime::value::Value::Reference;
 
 pub fn disassemble_chunk(chunk: &Chunk, name: &str) {

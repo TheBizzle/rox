@@ -1,7 +1,7 @@
+pub mod compiler;
 pub mod core;
 pub mod vm;
 
-mod compiler;
 mod parser;
 mod runtime;
 

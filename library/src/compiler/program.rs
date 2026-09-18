@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
+use crate::core::opcode::OpCode::{self, CloseUpvalue, Pop};
+
 use crate::runtime::chunk::Chunk;
 use crate::runtime::gc_object::GcObject;
 use crate::runtime::heap_object::FunctionObj;
 use crate::runtime::heap_object::HeapObject::HeapFunction;
-use crate::runtime::opcode::OpCode::{self, CloseUpvalue, Pop};
 
 use super::function_kind::FunctionKind::{self, Initializer, Method};
 
