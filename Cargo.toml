@@ -2,5 +2,6 @@
 members = [
   "library",
   "cli",
+  "wasm-backend",
 ]
 resolver = "3"

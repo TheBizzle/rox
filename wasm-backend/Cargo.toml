@@ -1,0 +1,31 @@
+[package]
+name = "rox-wasm-backend"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+
+authors = ["TheBizzle <jason.bertsche@gmail.com>"]
+description = "A Rust implementation of the clox bytecode virtual machine from Crafting Interpreters"
+license = "BSD-3"
+repository = "https://github.com/TheBizzle/rox"
+readme = "README.md"
+
+keywords = ["lox", "bytecode", "compiler", "virtual-machine", "webassembly"]
+categories = ["development-tools"]
+
+publish = false
+
+[dependencies]
+tokio = { version = "1.52.3", features = ["io-std", "macros", "rt-multi-thread"] }
+wasm-encoder = "0.259"
+wasmparser = "0.259"
+
+rox-lib = { path = "../library" }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"
+nursery = "deny"
