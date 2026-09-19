@@ -31,7 +31,7 @@ enum Type {
   Boolean,
   Number,
   _Reference,
-  Raw,
+  _Raw,
 }
 
 const NIL: i32 = 0;
@@ -83,7 +83,7 @@ impl WasmCompiler {
     types.ty().function([ValType::I32, ValType::I32], []);
 
     let print_number_type_index = types.len();
-    types.ty().function([ValType::I32, ValType::F64], []);
+    types.ty().function([ValType::F64], []);
 
     let main_type_index = types.len();
     types.ty().function([], [ValType::I32, ValType::I32]);
@@ -118,9 +118,24 @@ impl WasmCompiler {
     let mut code = CodeSection::new();
     let mut function = Function::new(fn_constant_defs);
 
+    macro_rules! push_type {
+      () => {{
+        let typ = if self.stack.peek_nil(0) {
+          Type::Nil
+        } else if self.stack.peek_boolean(0) {
+          Type::Boolean
+        } else if self.stack.peek_number(0) {
+          Type::Number
+        } else {
+          panic!("Unsupported stack item type");
+        };
+        function.instructions().i32_const(typ as i32);
+        self.stack.push_raw();
+      }};
+    }
+
     macro_rules! push_bool {
       ($boolean: ident) => {{
-        function.instructions().i32_const(Type::Boolean as i32);
         function.instructions().i32_const(Boolean::$boolean as i32);
         self.stack.push_boolean();
       }};
@@ -128,7 +143,6 @@ impl WasmCompiler {
 
     macro_rules! push_nil {
       () => {{
-        function.instructions().i32_const(Type::Nil as i32);
         function.instructions().i32_const(NIL);
         self.stack.push_nil();
       }};
@@ -184,7 +198,6 @@ impl WasmCompiler {
 
       match code {
         Raw(num) => {
-          function.instructions().i32_const(Type::Raw as i32);
           function.instructions().i32_const(i32::from(num));
           self.stack.push_number();
         },
@@ -267,7 +280,8 @@ impl WasmCompiler {
             panic!("`Constant`'s operand must be a raw number");
           };
 
-          function.instructions().i32_const(Type::Number as i32);
+          // TODO: Have to actually check what kind of constant it is; functions will be handled
+          // differently.
           function.instructions().local_get(u32::from(const_index));
           self.stack.push_number();
         },
@@ -481,9 +495,11 @@ impl WasmCompiler {
         },
 
         Named(Print) => {
-          let fn_index = if self.stack.peek_number() {
+          let fn_index = if self.stack.peek_number(0) {
             print_number_fn_index
           } else {
+            push_type!();
+            self.stack.pop();
             print_int_fn_index
           };
           function.instructions().call(fn_index);
@@ -494,8 +510,10 @@ impl WasmCompiler {
           if self.stack.is_empty() {
             push_nil!();
           }
-          self.stack.pop();
+          push_type!();
           function.instructions().return_();
+          self.stack.pop();
+          self.stack.pop();
         },
 
         Named(SetGlobal) => {

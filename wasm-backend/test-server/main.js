@@ -14,7 +14,7 @@ const imports = {
       window.output.value += `ERROR: ${msg}\n`;
     },
 
-    print_int(type, value) {
+    print_int(value, type) {
       switch(type) {
         case 0: {
           window.output.value += "nil";
@@ -31,17 +31,8 @@ const imports = {
       window.output.value += "\n";
     },
 
-    print_number(type, value) {
-      switch(type) {
-        case 2: {
-          window.output.value += value.toString();
-          break;
-        }
-        default: {
-          console.warn("Unknown numeric-print argument type ordinal: ", type, value);
-        }
-      }
-      window.output.value += "\n";
+    print_number(value) {
+      window.output.value += `${value}\n`;
     }
   }
 };

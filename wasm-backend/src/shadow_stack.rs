@@ -10,6 +10,7 @@ enum LoxType {
   Nil,
   Number,
   Object,
+  Raw,
   String,
   Upvalue,
 }
@@ -27,12 +28,25 @@ impl ShadowStack {
     self.stack.is_empty()
   }
 
-  fn peek(&self) -> Option<&LoxType> {
-    self.stack.last()
+  fn peek(&self, n: usize) -> Option<&LoxType> {
+    self.stack.get(self.stack.len() - 1 - n)
   }
 
-  pub fn peek_number(&self) -> bool {
-    self.peek() == Some(&LoxType::Number)
+  pub fn peek_boolean(&self, n: usize) -> bool {
+    self.peek(n) == Some(&LoxType::Boolean)
+  }
+
+  pub fn peek_nil(&self, n: usize) -> bool {
+    self.peek(n) == Some(&LoxType::Nil)
+  }
+
+  pub fn peek_number(&self, n: usize) -> bool {
+    self.peek(n) == Some(&LoxType::Number)
+  }
+
+  #[allow(clippy::unused_self)]
+  pub const fn peek_string(&self, _n: usize) -> bool {
+    false
   }
 
   pub fn pop(&mut self) {
@@ -69,6 +83,10 @@ impl ShadowStack {
 
   pub fn push_object(&mut self) {
     self.stack.push(LoxType::Object);
+  }
+
+  pub fn push_raw(&mut self) {
+    self.stack.push(LoxType::Raw);
   }
 
   pub fn push_string(&mut self) {
