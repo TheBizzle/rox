@@ -20,6 +20,7 @@ strum = { version = "0.28", features = ["derive"] }
 tokio = { version = "1.52.3", features = ["io-std", "macros", "rt-multi-thread"] }
 wasm-encoder = "0.259"
 wasmparser = "0.259"
+wasmprinter = "0.259"
 
 rox-lib = { path = "../library" }
 
