@@ -14,6 +14,7 @@ const imports = {
           console.warn("Unknown print argument type ordinal: ", type);
         }
       }
+      window.output.value += "\n";
     }
   }
 };
