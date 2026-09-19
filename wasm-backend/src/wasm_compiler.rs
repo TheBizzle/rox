@@ -84,7 +84,14 @@ impl WasmCompiler {
     let mut code = CodeSection::new();
     let mut main = Function::new([]);
 
-    println!("{bytecode:?}");
+    println!("===   DEBUG BYTECODE   ===");
+    for code in bytecode {
+      match code {
+        Raw(num) => println!("{num}"),
+        Named(x) => println!("{x}"),
+      }
+    }
+    println!("=== END DEBUG BYTECODE ===");
 
     for code in bytecode {
       match code {
