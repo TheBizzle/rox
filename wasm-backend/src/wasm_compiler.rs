@@ -13,6 +13,8 @@ use rox_lib::core::opcode::OpCode::{
   Subtract, SuperInvoke, True,
 };
 
+use rox_lib::compiler::compilation::Compilation;
+
 use super::shadow_stack::ShadowStack;
 
 pub struct WasmCompiler {
@@ -44,7 +46,10 @@ impl WasmCompiler {
   }
 
   #[allow(clippy::too_many_lines)]
-  pub(super) fn run(&mut self, bytecode: &Vec<Byte>) -> Vec<u8> {
+  pub(super) fn run(&mut self, compilation: &Compilation) -> Vec<u8> {
+    let Compilation { strings: _strings, main: chunk } = compilation;
+    let bytecode: &Vec<Byte> = &chunk.line_data.values().flat_map(Clone::clone).collect();
+
     let mut module = Module::new();
 
     let mut memories = MemorySection::new();
@@ -82,20 +87,20 @@ impl WasmCompiler {
     module.section(&memories);
 
     let mut code = CodeSection::new();
-    let mut main = Function::new([]);
+    let mut function = Function::new([]);
 
     macro_rules! push_bool {
       ($boolean: ident) => {{
-        main.instructions().i32_const(Type::Boolean as i32);
-        main.instructions().i32_const(Boolean::$boolean as i32);
+        function.instructions().i32_const(Type::Boolean as i32);
+        function.instructions().i32_const(Boolean::$boolean as i32);
         self.stack.push_boolean();
       }};
     }
 
     macro_rules! push_nil {
       () => {{
-        main.instructions().i32_const(Type::Nil as i32);
-        main.instructions().i32_const(NIL);
+        function.instructions().i32_const(Type::Nil as i32);
+        function.instructions().i32_const(NIL);
         self.stack.push_nil();
       }};
     }
@@ -112,8 +117,8 @@ impl WasmCompiler {
     for code in bytecode {
       match code {
         Raw(num) => {
-          main.instructions().i32_const(Type::Raw as i32);
-          main.instructions().i32_const(i32::from(*num));
+          function.instructions().i32_const(Type::Raw as i32);
+          function.instructions().i32_const(i32::from(num));
           self.stack.push_number();
         },
         Named(Add) => {
@@ -403,7 +408,7 @@ impl WasmCompiler {
         },
 
         Named(Print) => {
-          main.instructions().call(print_fn_index);
+          function.instructions().call(print_fn_index);
           self.stack.pop();
         },
 
@@ -412,7 +417,7 @@ impl WasmCompiler {
             push_nil!();
           }
           self.stack.pop();
-          main.instructions().return_();
+          function.instructions().return_();
         },
 
         Named(SetGlobal) => {
@@ -491,16 +496,18 @@ impl WasmCompiler {
           push_bool!(True);
         },
       }
+
+      bc_index += 1;
     }
 
-    main.instructions().end();
+    function.instructions().end();
 
     let mut exports = ExportSection::new();
     exports.export("main", ExportKind::Func, main_fn_index);
     exports.export("memory", ExportKind::Memory, public_memory_index);
     module.section(&exports);
 
-    code.function(&main);
+    code.function(&function);
     module.section(&code);
 
     module.section(&data);
