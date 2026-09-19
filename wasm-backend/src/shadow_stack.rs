@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+#[derive(Eq, PartialEq)]
 enum LoxType {
   Boolean,
   BoundMethod,
@@ -24,6 +25,14 @@ impl ShadowStack {
 
   pub const fn is_empty(&self) -> bool {
     self.stack.is_empty()
+  }
+
+  fn peek(&self) -> Option<&LoxType> {
+    self.stack.last()
+  }
+
+  pub fn peek_number(&self) -> bool {
+    self.peek() == Some(&LoxType::Number)
   }
 
   pub fn pop(&mut self) {

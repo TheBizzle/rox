@@ -1,6 +1,6 @@
 const imports = {
   env: {
-    print(type, value) {
+    print_int(type, value) {
       switch(type) {
         case 0: {
           window.output.value += "nil";
@@ -11,7 +11,20 @@ const imports = {
           break;
         }
         default: {
-          console.warn("Unknown print argument type ordinal: ", type);
+          console.warn("Unknown int-print argument type ordinal: ", type, value);
+        }
+      }
+      window.output.value += "\n";
+    },
+
+    print_number(type, value) {
+      switch(type) {
+        case 2: {
+          window.output.value += value.toString();
+          break;
+        }
+        default: {
+          console.warn("Unknown numeric-print argument type ordinal: ", type, value);
         }
       }
       window.output.value += "\n";

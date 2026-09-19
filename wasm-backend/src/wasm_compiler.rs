@@ -1,8 +1,8 @@
 use strum::FromRepr;
 
 use wasm_encoder::{
-  CodeSection, DataSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-  MemorySection, MemoryType, Module, TypeSection, ValType,
+  CodeSection, DataSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, Ieee64,
+  ImportSection, MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
 use rox_lib::core::byte::Byte::{self, Named, Raw};
@@ -29,7 +29,7 @@ pub struct WasmCompiler {
 enum Type {
   Nil,
   Boolean,
-  _Number,
+  Number,
   _Reference,
   Raw,
 }
@@ -69,8 +69,11 @@ impl WasmCompiler {
 
     let mut types = TypeSection::new();
 
-    let print_type_index = types.len();
+    let print_int_type_index = types.len();
     types.ty().function([ValType::I32, ValType::I32], []);
+
+    let print_number_type_index = types.len();
+    types.ty().function([ValType::I32, ValType::F64], []);
 
     let main_type_index = types.len();
     types.ty().function([], [ValType::I32, ValType::I32]);
@@ -78,8 +81,10 @@ impl WasmCompiler {
     module.section(&types);
 
     let mut imports = ImportSection::new();
-    let print_fn_index = imports.len();
-    imports.import("env", "print", EntityType::Function(print_type_index));
+    let print_int_fn_index = imports.len();
+    imports.import("env", "print_int", EntityType::Function(print_int_type_index));
+    let print_number_fn_index = imports.len();
+    imports.import("env", "print_number", EntityType::Function(print_number_type_index));
     module.section(&imports);
 
     let mut functions = FunctionSection::new();
@@ -94,7 +99,7 @@ impl WasmCompiler {
       CompiledBoolean(..) => (1, ValType::I32),
       CompiledFunction { .. } => todo!("Function constants are not yet supported"),
       CompiledNil => (1, ValType::I32),
-      CompiledNumber(..) => todo!("Number constants are not yet supported"),
+      CompiledNumber(..) => (1, ValType::F64),
       CompiledString(..) => todo!("String constants are not yet supported"),
     });
 
@@ -131,7 +136,7 @@ impl WasmCompiler {
         },
         CompiledFunction { .. } => todo!("Function constants are not yet supported"),
         CompiledNil => instrs.i32_const(NIL),
-        CompiledNumber(x) => todo!("Number constants are not yet supported"),
+        CompiledNumber(x) => instrs.f64_const(Ieee64::new(x.to_bits())),
         CompiledString(..) => todo!("String constants are not yet supported"),
       };
 
@@ -147,7 +152,11 @@ impl WasmCompiler {
     }
     println!("=== END DEBUG BYTECODE ===");
 
-    for code in bytecode {
+    let mut bc_index = 0;
+
+    while bc_index < bytecode.len() {
+      let code = bytecode[bc_index];
+
       match code {
         Raw(num) => {
           function.instructions().i32_const(Type::Raw as i32);
@@ -228,8 +237,14 @@ impl WasmCompiler {
         },
 
         Named(Constant) => {
-          todo!("Not yet implemented: CONSTANT");
-          // push_and_win!(read_constant!())
+          bc_index += 1;
+          let Raw(const_index) = bytecode[bc_index] else {
+            panic!("`Constant`'s operand must be a raw number");
+          };
+
+          function.instructions().i32_const(Type::Number as i32);
+          function.instructions().local_get(u32::from(const_index));
+          self.stack.push_number();
         },
 
         Named(DefineGlobal) => {
@@ -441,7 +456,12 @@ impl WasmCompiler {
         },
 
         Named(Print) => {
-          function.instructions().call(print_fn_index);
+          let fn_index = if self.stack.peek_number() {
+            print_number_fn_index
+          } else {
+            print_int_fn_index
+          };
+          function.instructions().call(fn_index);
           self.stack.pop();
         },
 
