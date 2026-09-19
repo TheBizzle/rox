@@ -19,8 +19,9 @@ pub struct WasmCompiler {
 
 const NIL_TYPE: i32 = 0;
 const BOOLEAN_TYPE: i32 = 1;
-const NUMBER_TYPE: i32 = 2;
+const _NUMBER_TYPE: i32 = 2;
 const _REFERENCE_TYPE: i32 = 3;
+const RAW_TYPE: i32 = 4;
 
 const FALSE_VALUE: i32 = 0;
 const TRUE_VALUE: i32 = 1;
@@ -76,7 +77,7 @@ impl WasmCompiler {
     for code in bytecode {
       match code {
         Raw(num) => {
-          main.instructions().i32_const(NUMBER_TYPE);
+          main.instructions().i32_const(RAW_TYPE);
           main.instructions().i32_const(i32::from(*num));
           self.stack.push_number();
         },
