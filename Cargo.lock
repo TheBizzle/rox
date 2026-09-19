@@ -166,6 +166,7 @@ name = "rox-wasm-backend"
 version = "0.1.0"
 dependencies = [
  "rox-lib",
+ "strum",
  "tokio",
  "wasm-encoder",
  "wasmparser",

@@ -1,3 +1,5 @@
+use strum::FromRepr;
+
 use wasm_encoder::{
   CodeSection, DataSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
   MemorySection, MemoryType, Module, TypeSection, ValType,
@@ -17,14 +19,24 @@ pub struct WasmCompiler {
   stack: ShadowStack,
 }
 
-const NIL_TYPE: i32 = 0;
-const BOOLEAN_TYPE: i32 = 1;
-const _NUMBER_TYPE: i32 = 2;
-const _REFERENCE_TYPE: i32 = 3;
-const RAW_TYPE: i32 = 4;
+#[derive(FromRepr, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+enum Type {
+  Nil,
+  Boolean,
+  _Number,
+  _Reference,
+  Raw,
+}
 
-const FALSE_VALUE: i32 = 0;
-const TRUE_VALUE: i32 = 1;
+const NIL: i32 = 0;
+
+#[derive(FromRepr, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+enum Boolean {
+  False,
+  True,
+}
 
 impl WasmCompiler {
   pub(super) const fn new() -> Self {
@@ -77,7 +89,7 @@ impl WasmCompiler {
     for code in bytecode {
       match code {
         Raw(num) => {
-          main.instructions().i32_const(RAW_TYPE);
+          main.instructions().i32_const(Type::Raw as i32);
           main.instructions().i32_const(i32::from(*num));
           self.stack.push_number();
         },
@@ -181,8 +193,8 @@ impl WasmCompiler {
         },
 
         Named(False) => {
-          main.instructions().i32_const(BOOLEAN_TYPE);
-          main.instructions().i32_const(FALSE_VALUE);
+          main.instructions().i32_const(Type::Boolean as i32);
+          main.instructions().i32_const(Boolean::False as i32);
           self.stack.push_boolean();
         },
 
@@ -355,8 +367,8 @@ impl WasmCompiler {
         },
 
         Named(Nil) => {
-          main.instructions().i32_const(NIL_TYPE);
-          main.instructions().i32_const(0);
+          main.instructions().i32_const(Type::Nil as i32);
+          main.instructions().i32_const(NIL);
           self.stack.push_nil();
         },
 
@@ -378,8 +390,8 @@ impl WasmCompiler {
 
         Named(Return) => {
           if self.stack.is_empty() {
-            main.instructions().i32_const(NIL_TYPE);
-            main.instructions().i32_const(0);
+            main.instructions().i32_const(Type::Nil as i32);
+            main.instructions().i32_const(NIL);
           } else {
             self.stack.pop();
           }
@@ -459,8 +471,8 @@ impl WasmCompiler {
         },
 
         Named(True) => {
-          main.instructions().i32_const(BOOLEAN_TYPE);
-          main.instructions().i32_const(TRUE_VALUE);
+          main.instructions().i32_const(Type::Boolean as i32);
+          main.instructions().i32_const(Boolean::True as i32);
           self.stack.push_boolean();
         },
       }
