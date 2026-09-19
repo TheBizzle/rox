@@ -10,12 +10,12 @@ use crate::core::opcode::OpCode::{
   SetUpvalue, Subtract, SuperInvoke, True,
 };
 
+use crate::core::byte::Byte::Named;
 use crate::core::output::Output::{self, StdErrLn, StdOutLn};
 
 use crate::compiler::disassembler::disassemble_instruction;
 use crate::compiler::function_kind::FunctionKind::{self, Function, Method, Script};
 
-use crate::runtime::byte::Byte::Named;
 use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap_gc::DEBUG_STRESS_GC;
 use crate::runtime::heap_object::FunctionObj::{MainScript, UserDefined};

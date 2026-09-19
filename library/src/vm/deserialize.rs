@@ -1,6 +1,6 @@
+use crate::core::byte::Byte::{Named, Raw};
 use crate::core::opcode::OpCode;
 
-use crate::runtime::byte::Byte::{Named, Raw};
 use crate::runtime::chunk::Chunk;
 use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap_object::FunctionObj::UserDefined;

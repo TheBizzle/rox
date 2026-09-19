@@ -1,11 +1,11 @@
 use std::fmt::Write;
 
+use crate::core::byte::Byte;
+
 use crate::compiler::compilation::CompiledValue::{
   self, CompiledBoolean, CompiledFunction, CompiledNil, CompiledNumber, CompiledString,
 };
 use crate::compiler::compilation::{Compilation, CompiledChunk, StringRef};
-
-use crate::runtime::byte::Byte;
 
 pub(super) fn serialize_root(compilation: &Compilation) -> String {
   let Compilation { strings, main } = compilation;

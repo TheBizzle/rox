@@ -5,6 +5,8 @@ mod wasm_compiler;
 
 use wasmparser::validate;
 
+use rox_lib::core::byte::Byte;
+
 use rox_lib::compiler::Compiler;
 
 use crate::wasm_compiler::WasmCompiler;

@@ -6,6 +6,7 @@ use crate::core::opcode::OpCode::{
   SetUpvalue, Subtract, SuperInvoke, True as TrueCode,
 };
 
+use crate::core::byte::Byte::{self, Named, Raw};
 use crate::core::output::Output;
 
 use crate::parser::Parser;
@@ -16,7 +17,6 @@ use crate::parser::token::TokenType::{
   RightBrace, RightParen, Semicolon, Slash, Star, True, Var, While,
 };
 
-use crate::runtime::byte::Byte::{self, Named, Raw};
 use crate::runtime::chunk::Chunk;
 use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap::Heap;

@@ -1,6 +1,7 @@
 use std::ptr::null_mut;
 
-use crate::runtime::byte::Byte;
+use crate::core::byte::Byte;
+
 use crate::runtime::gc_object::GcObject;
 use crate::runtime::heap_object::{ClosureObj, HeapObject::HeapClosure};
 use crate::runtime::value::Value;

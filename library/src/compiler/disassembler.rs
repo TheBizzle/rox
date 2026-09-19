@@ -1,3 +1,4 @@
+use crate::core::byte::Byte::{Named, Raw};
 use crate::core::opcode::OpCode::{
   self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
   GetLocal, GetProperty, GetSuper, GetUpvalue, Greater, Inherit, Invoke, Jump, JumpIfFalse, Less, Loop,
@@ -5,7 +6,6 @@ use crate::core::opcode::OpCode::{
   Subtract, SuperInvoke, True,
 };
 
-use crate::runtime::byte::Byte::{Named, Raw};
 use crate::runtime::chunk::Chunk;
 use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap_object::HeapObject::HeapFunction;

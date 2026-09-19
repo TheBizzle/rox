@@ -8,6 +8,7 @@ pub enum Byte {
 
 impl Byte {
   #[inline]
+  #[must_use]
   pub const fn as_u8(self) -> u8 {
     match self {
       Self::Named(opcode) => opcode as u8,
@@ -16,6 +17,7 @@ impl Byte {
   }
 
   #[inline]
+  #[must_use]
   pub const fn as_u16(self) -> u16 {
     match self {
       Self::Named(opcode) => opcode as u16,
@@ -24,6 +26,7 @@ impl Byte {
   }
 
   #[inline]
+  #[must_use]
   pub const fn as_usize(self) -> usize {
     match self {
       Self::Named(opcode) => opcode as usize,

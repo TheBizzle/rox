@@ -1,4 +1,3 @@
-pub mod byte;
 pub mod chunk;
 pub mod gc_object;
 pub mod heap;

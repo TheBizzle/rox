@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::runtime::byte::Byte;
+use crate::core::byte::Byte;
+
 use crate::runtime::chunk::Chunk;
 use crate::runtime::gc_object::{GcObject, GcPtr};
 use crate::runtime::heap_object::FunctionObj::{MainScript, UserDefined};

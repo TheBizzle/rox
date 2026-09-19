@@ -1,8 +1,8 @@
 use std::ptr::null_mut;
 
+use crate::core::byte::Byte;
 use crate::core::memory::{free_array, grow_array, next_capacity};
 
-use super::byte::Byte;
 use super::value::Value;
 use super::value_array::ValueArray;
 
