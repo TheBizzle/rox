@@ -7,6 +7,14 @@ const imports = {
           msg = "Operand must be a number.";
           break;
         }
+        case 1: {
+          msg = "Operands must be numbers.";
+          break;
+        }
+        case 2: {
+          msg = "Operands must be two numbers or two strings.";
+          break;
+        }
         default: {
           console.warn("Unknown error ordinal: ", error_num);
         }

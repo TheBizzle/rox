@@ -47,6 +47,8 @@ enum Boolean {
 #[repr(u8)]
 enum ErrorMsg {
   OperandMustBeNumber,
+  OperandsMustBeNumbers,
+  OperandsMustBeNumsOrStrs,
 }
 
 impl WasmCompiler {
@@ -202,27 +204,23 @@ impl WasmCompiler {
           self.stack.push_number();
         },
         Named(Add) => {
-          todo!("Not yet implemented: ADD");
-          // let a = self.peek(1);
-          // let b = self.peek(0);
-
-          // match (a, b) {
-          //   (Double(x), Double(y)) => {
-          //     let _ = self.pop();
-          //     let _ = self.pop();
-          //     push_and_win!(Double(x + y))
-          //   },
-          //   #[allow(irrefutable_let_patterns)]
-          //   (Reference(GcPtr(x)), Reference(GcPtr(y)))
-          //     if let GcObject { object: HeapString(str1), .. } = unsafe { &*x }
-          //       && let GcObject { object: HeapString(str2), .. } = unsafe { &*y } =>
-          //   {
-          //     let _ = self.pop();
-          //     let _ = self.pop();
-          //     push_and_win!(Reference(GcPtr(self.compiler.heap.concatenate_strings(*str1, *str2).1)))
-          //   },
-          //   _ => runtime_error!("Operands must be two numbers or two strings."),
-          // }
+          if self.stack.peek_number(0) && self.stack.peek_number(1) {
+            function.instructions().f64_add();
+            self.stack.pop();
+          } else if self.stack.peek_string(0) && self.stack.peek_string(1) {
+            todo!("String concatenation is not yet implemented");
+            //   #[allow(irrefutable_let_patterns)]
+            //   (Reference(GcPtr(x)), Reference(GcPtr(y)))
+            //     if let GcObject { object: HeapString(str1), .. } = unsafe { &*x }
+            //       && let GcObject { object: HeapString(str2), .. } = unsafe { &*y } =>
+            //   {
+            //     let _ = self.pop();
+            //     let _ = self.pop();
+            //     push_and_win!(Reference(GcPtr(self.compiler.heap.concatenate_strings(*str1, *str2).1)))
+            //   },
+          } else {
+            runtime_error!(ErrorMsg::OperandsMustBeNumsOrStrs as i32);
+          }
         },
 
         Named(Class) => {
@@ -296,15 +294,36 @@ impl WasmCompiler {
         },
 
         Named(Divide) => {
-          todo!("Not yet implemented: DIVIDE");
-          // binary_op!(Double, /)
+          if self.stack.peek_number(0) && self.stack.peek_number(1) {
+            function.instructions().f64_div();
+            self.stack.pop();
+          } else {
+            runtime_error!(ErrorMsg::OperandsMustBeNumbers as i32);
+          }
         },
 
         Named(Equal) => {
-          todo!("Not yet implemented: EQUAL");
-          // let b = self.pop();
-          // let a = self.pop();
-          // push_and_win!(Boolean(values_are_equal(a, b)))
+          if self.stack.peek_boolean(0) && self.stack.peek_boolean(1) {
+            self.stack.pop();
+            function.instructions().i32_eq();
+          } else if self.stack.peek_number(0) && self.stack.peek_number(1) {
+            self.stack.pop();
+            self.stack.pop();
+            function.instructions().f64_sub().f64_abs().f64_const(Ieee64::new((1e-9_f64).to_bits())).f64_lt();
+            self.stack.push_boolean();
+          } else if self.stack.peek_reference(0) && self.stack.peek_reference(1) {
+            todo!("Missing implementation");
+            // let (a, b) = unsafe { (&*x, &*y) };
+            // objs_are_equal(&a.object, &b.object)
+          } else if self.stack.peek_nil(0) && self.stack.peek_nil(1) {
+            self.stack.pop();
+            self.stack.pop();
+            push_bool!(True);
+          } else {
+            self.stack.pop();
+            self.stack.pop();
+            push_bool!(False);
+          }
         },
 
         Named(False) => {
@@ -391,8 +410,14 @@ impl WasmCompiler {
         },
 
         Named(Greater) => {
-          todo!("Not yet implemented: GREATER");
-          // binary_op!(Boolean, >)
+          if self.stack.peek_number(0) && self.stack.peek_number(1) {
+            function.instructions().f64_gt();
+            self.stack.pop();
+            self.stack.pop();
+            self.stack.push_boolean();
+          } else {
+            runtime_error!(ErrorMsg::OperandsMustBeNumbers as i32);
+          }
         },
 
         Named(Inherit) => {
@@ -445,8 +470,14 @@ impl WasmCompiler {
         },
 
         Named(Less) => {
-          todo!("Not yet implemented: LESS");
-          //binary_op!(Boolean, <)
+          if self.stack.peek_number(0) && self.stack.peek_number(1) {
+            function.instructions().f64_lt();
+            self.stack.pop();
+            self.stack.pop();
+            self.stack.push_boolean();
+          } else {
+            runtime_error!(ErrorMsg::OperandsMustBeNumbers as i32);
+          }
         },
 
         Named(Loop) => {
@@ -465,18 +496,20 @@ impl WasmCompiler {
         },
 
         Named(Multiply) => {
-          todo!("Not yet implemented: MULTIPLY");
-          //binary_op!(Double, *)
+          if self.stack.peek_number(0) && self.stack.peek_number(1) {
+            function.instructions().f64_mul();
+            self.stack.pop();
+          } else {
+            runtime_error!(ErrorMsg::OperandsMustBeNumbers as i32);
+          }
         },
 
         Named(Negate) => {
-          todo!("Not yet implemented: NEGATE");
-          //if let Double(x) = self.peek(0) {
-          //  let _ = self.pop();
-          //  push_and_win!(Double(-x))
-          //} else {
-          //  runtime_error!("Operand must be a number.")
-          //}
+          if self.stack.peek_number(0) {
+            function.instructions().f64_neg();
+          } else {
+            runtime_error!(ErrorMsg::OperandMustBeNumber as i32);
+          }
         },
 
         Named(Nil) => {
@@ -484,8 +517,17 @@ impl WasmCompiler {
         },
 
         Named(Not) => {
-          todo!("Not yet implemented: NOT");
-          //push_and_win!(Boolean(is_falsey(&self.pop())))
+          if self.stack.peek_nil(0) {
+            function.instructions().drop();
+            self.stack.pop();
+            push_bool!(True);
+          } else if self.stack.peek_boolean(0) {
+            function.instructions().i32_eqz();
+          } else {
+            function.instructions().drop();
+            self.stack.pop();
+            push_bool!(False);
+          }
         },
 
         Named(Pop) => {
@@ -570,8 +612,12 @@ impl WasmCompiler {
         },
 
         Named(Subtract) => {
-          todo!("Not yet implemented: SUBTRACT");
-          //binary_op!(Double, -)
+          if self.stack.peek_number(0) && self.stack.peek_number(1) {
+            function.instructions().f64_sub();
+            self.stack.pop();
+          } else {
+            runtime_error!(ErrorMsg::OperandsMustBeNumbers as i32);
+          }
         },
 
         Named(SuperInvoke) => {

@@ -44,6 +44,10 @@ impl ShadowStack {
     self.peek(n) == Some(&LoxType::Number)
   }
 
+  pub fn peek_reference(&self, n: usize) -> bool {
+    todo!("References are not yet implemented");
+  }
+
   #[allow(clippy::unused_self)]
   pub const fn peek_string(&self, _n: usize) -> bool {
     false
