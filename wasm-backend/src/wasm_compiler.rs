@@ -14,6 +14,9 @@ use rox_lib::core::opcode::OpCode::{
 };
 
 use rox_lib::compiler::compilation::Compilation;
+use rox_lib::compiler::compilation::CompiledValue::{
+  CompiledBoolean, CompiledFunction, CompiledNil, CompiledNumber, CompiledString,
+};
 
 use super::shadow_stack::ShadowStack;
 
@@ -86,8 +89,17 @@ impl WasmCompiler {
 
     module.section(&memories);
 
+    #[allow(clippy::match_same_arms)]
+    let fn_constant_defs = chunk.constants.iter().map(|c| match c {
+      CompiledBoolean(..) => (1, ValType::I32),
+      CompiledFunction { .. } => todo!("Function constants are not yet supported"),
+      CompiledNil => (1, ValType::I32),
+      CompiledNumber(..) => todo!("Number constants are not yet supported"),
+      CompiledString(..) => todo!("String constants are not yet supported"),
+    });
+
     let mut code = CodeSection::new();
-    let mut function = Function::new([]);
+    let mut function = Function::new(fn_constant_defs);
 
     macro_rules! push_bool {
       ($boolean: ident) => {{
@@ -103,6 +115,27 @@ impl WasmCompiler {
         function.instructions().i32_const(NIL);
         self.stack.push_nil();
       }};
+    }
+
+    for (i, constant) in chunk.constants.iter().enumerate() {
+      let mut instrs = function.instructions();
+
+      let instrs2 = match constant {
+        CompiledBoolean(boolean) => {
+          let value = if *boolean {
+            Boolean::True
+          } else {
+            Boolean::False
+          };
+          instrs.i32_const(value as i32)
+        },
+        CompiledFunction { .. } => todo!("Function constants are not yet supported"),
+        CompiledNil => instrs.i32_const(NIL),
+        CompiledNumber(x) => todo!("Number constants are not yet supported"),
+        CompiledString(..) => todo!("String constants are not yet supported"),
+      };
+
+      instrs2.local_set(u32::try_from(i).unwrap());
     }
 
     println!("===   DEBUG BYTECODE   ===");
