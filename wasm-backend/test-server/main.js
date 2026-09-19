@@ -1,5 +1,19 @@
 const imports = {
   env: {
+    error(error_num) {
+      let msg = "UNKNOWN_ERROR";
+      switch(error_num) {
+        case 0: {
+          msg = "Operand must be a number.";
+          break;
+        }
+        default: {
+          console.warn("Unknown error ordinal: ", error_num);
+        }
+      }
+      window.output.value += `ERROR: ${msg}\n`;
+    },
+
     print_int(type, value) {
       switch(type) {
         case 0: {

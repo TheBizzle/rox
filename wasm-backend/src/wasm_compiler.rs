@@ -43,6 +43,12 @@ enum Boolean {
   True,
 }
 
+#[derive(FromRepr, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+enum ErrorMsg {
+  OperandMustBeNumber,
+}
+
 impl WasmCompiler {
   pub(super) const fn new() -> Self {
     Self { stack: ShadowStack::new() }
@@ -70,6 +76,9 @@ impl WasmCompiler {
 
     let mut types = TypeSection::new();
 
+    let error_type_index = types.len();
+    types.ty().function([ValType::I32, ValType::I32], []);
+
     let print_int_type_index = types.len();
     types.ty().function([ValType::I32, ValType::I32], []);
 
@@ -82,6 +91,8 @@ impl WasmCompiler {
     module.section(&types);
 
     let mut imports = ImportSection::new();
+    let error_fn_index = imports.len();
+    imports.import("env", "error", EntityType::Function(error_type_index));
     let print_int_fn_index = imports.len();
     imports.import("env", "print_int", EntityType::Function(print_int_type_index));
     let print_number_fn_index = imports.len();
@@ -155,9 +166,21 @@ impl WasmCompiler {
     println!("=== END DEBUG BYTECODE ===");
 
     let mut bc_index = 0;
+    let mut this_is_fine = true;
 
-    while bc_index < bytecode_pairs.len() {
-      let (_line_num, code) = bytecode_pairs[bc_index];
+    while this_is_fine && bc_index < bytecode_pairs.len() {
+      let (line_num, code) = bytecode_pairs[bc_index];
+
+      macro_rules! runtime_error {
+        ($error_num: expr) => {{
+          function
+            .instructions()
+            .i32_const($error_num)
+            .i32_const(line_num.cast_signed())
+            .call(error_fn_index);
+          this_is_fine = false;
+        }};
+      }
 
       match code {
         Raw(num) => {
