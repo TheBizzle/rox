@@ -14,10 +14,10 @@ use crate::wasm_result::WasmResult::{self, CompilationError, Success, Validation
 
 #[must_use]
 pub fn generate_wasm(source: &str) -> WasmResult {
-  if let Some((_compilation, _)) = Compiler::default().run(source.to_string()) {
-    // TODO: Crawl the `function_gc_ptr` like we're serializing the bytecode, and get all of the
-    // strings and functions imported into the Wasm context
-    let wasm = WasmCompiler::new().run(&Vec::new());
+  if let Some((compilation, _)) = Compiler::default().run(source.to_string()) {
+    let bytecode: Vec<Byte> = compilation.main.line_data.values().flat_map(Clone::clone).collect();
+
+    let wasm = WasmCompiler::new().run(&bytecode);
 
     match validate(&wasm) {
       Ok(_) => Success { wasm },

@@ -3,8 +3,9 @@ use wasm_encoder::{
   MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
+use rox_lib::core::byte::Byte::{self, Named, Raw};
 use rox_lib::core::opcode::OpCode::{
-  self, Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
+  Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
   GetLocal, GetProperty, GetSuper, GetUpvalue, Greater, Inherit, Invoke, Jump, JumpIfFalse, Less, Loop,
   Method, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue,
   Subtract, SuperInvoke, True,
@@ -18,7 +19,7 @@ pub struct WasmCompiler {
 
 const NIL_TYPE: i32 = 0;
 const BOOLEAN_TYPE: i32 = 1;
-const _NUMBER_TYPE: i32 = 2;
+const NUMBER_TYPE: i32 = 2;
 const _REFERENCE_TYPE: i32 = 3;
 
 const FALSE_VALUE: i32 = 0;
@@ -30,7 +31,7 @@ impl WasmCompiler {
   }
 
   #[allow(clippy::too_many_lines)]
-  pub(super) fn run(&mut self, _bytecode: &[OpCode]) -> Vec<u8> {
+  pub(super) fn run(&mut self, bytecode: &Vec<Byte>) -> Vec<u8> {
     let mut module = Module::new();
 
     let mut memories = MemorySection::new();
@@ -70,10 +71,16 @@ impl WasmCompiler {
     let mut code = CodeSection::new();
     let mut main = Function::new([]);
 
-    // Was: bytecode {
-    for code in [True, Print, Return] {
+    println!("{bytecode:?}");
+
+    for code in bytecode {
       match code {
-        Add => {
+        Raw(num) => {
+          main.instructions().i32_const(NUMBER_TYPE);
+          main.instructions().i32_const(i32::from(*num));
+          self.stack.push_number();
+        },
+        Named(Add) => {
           todo!("Not yet implemented: ADD");
           // let a = self.peek(1);
           // let b = self.peek(0);
@@ -97,21 +104,21 @@ impl WasmCompiler {
           // }
         },
 
-        Class => {
+        Named(Class) => {
           todo!("Not yet implemented: CLASS");
           // let (_, name_gc_ptr) = read_string!();
           // let x = self.compiler.heap.allocate_class(ClassObj::new(name_gc_ptr));
           // push_and_win!(Reference(GcPtr(x)))
         },
 
-        CloseUpvalue => {
+        Named(CloseUpvalue) => {
           todo!("Not yet implemented: CLOSEUPVALUE");
           // self.compiler.heap.close_upvalues(unsafe { self.stack_top.sub(1) });
           // self.pop();
           // Continue
         },
 
-        Closure => {
+        Named(Closure) => {
           todo!("Not yet implemented: CLOSURE");
           // let constant = read_constant!();
           // if let Reference(GcPtr(fn_gc_ptr)) = constant
@@ -146,12 +153,12 @@ impl WasmCompiler {
           // }
         },
 
-        Constant => {
+        Named(Constant) => {
           todo!("Not yet implemented: CONSTANT");
           // push_and_win!(read_constant!())
         },
 
-        DefineGlobal => {
+        Named(DefineGlobal) => {
           todo!("Not yet implemented: DEFINEGLOBAL");
           // let value = self.peek(0);
           // let (_, key_gc_ptr) = read_string!();
@@ -160,32 +167,32 @@ impl WasmCompiler {
           // Continue
         },
 
-        Divide => {
+        Named(Divide) => {
           todo!("Not yet implemented: DIVIDE");
           // binary_op!(Double, /)
         },
 
-        Equal => {
+        Named(Equal) => {
           todo!("Not yet implemented: EQUAL");
           // let b = self.pop();
           // let a = self.pop();
           // push_and_win!(Boolean(values_are_equal(a, b)))
         },
 
-        False => {
+        Named(False) => {
           main.instructions().i32_const(BOOLEAN_TYPE);
           main.instructions().i32_const(FALSE_VALUE);
           self.stack.push_boolean();
         },
 
-        FnCall => {
+        Named(FnCall) => {
           todo!("Not yet implemented: FNCALL");
           // let arg_count = read_u8!();
           // let value = self.peek(arg_count as usize);
           // self.call_value_for_error(&value, arg_count).unwrap_or(Continue)
         },
 
-        GetGlobal => {
+        Named(GetGlobal) => {
           todo!("Not yet implemented: GETGLOBAL");
           // let (name, _) = read_string!();
           // if let Some(r) = self.compiler.heap.globals.get(name) {
@@ -196,7 +203,7 @@ impl WasmCompiler {
           // }
         },
 
-        GetLocal => {
+        Named(GetLocal) => {
           todo!("Not yet implemented: GETLOCAL");
           // let slot_num = read_u8!();
           // let slots_ptr = frame!().slots_ptr;
@@ -204,7 +211,7 @@ impl WasmCompiler {
           // push_and_win!(value)
         },
 
-        GetProperty => {
+        Named(GetProperty) => {
           todo!("Not yet implemented: GETPROPERTY");
           // if let Reference(GcPtr(instance_gc_ptr)) = self.peek(0)
           //   && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
@@ -226,7 +233,7 @@ impl WasmCompiler {
           // }
         },
 
-        GetSuper => {
+        Named(GetSuper) => {
           todo!("Not yet implemented: GETSUPER");
           // let (name_str, _) = read_string!();
 
@@ -245,7 +252,7 @@ impl WasmCompiler {
           // }
         },
 
-        GetUpvalue => {
+        Named(GetUpvalue) => {
           todo!("Not yet implemented: GETUPVALUE");
           // let slot = read_u8!() as usize;
           // let closure = frame_mut!().closure();
@@ -257,12 +264,12 @@ impl WasmCompiler {
           // push_and_win!(value)
         },
 
-        Greater => {
+        Named(Greater) => {
           todo!("Not yet implemented: GREATER");
           // binary_op!(Boolean, >)
         },
 
-        Inherit => {
+        Named(Inherit) => {
           todo!("Not yet implemented: INHERIT");
           // if let Reference(GcPtr(super_gc_ptr)) = self.peek(1)
           //   && let HeapClass(super_class_obj_ptr) = unsafe { &*super_gc_ptr }.object
@@ -283,14 +290,14 @@ impl WasmCompiler {
           // }
         },
 
-        Invoke => {
+        Named(Invoke) => {
           todo!("Not yet implemented: INVOKE");
           // let (name_ptr, _) = read_string!();
           // let arg_count = read_u8!();
           // self.invoke(name_ptr, arg_count).unwrap_or(Continue)
         },
 
-        Jump => {
+        Named(Jump) => {
           todo!("Not yet implemented: JUMP");
           // let offset = read_u16!();
           // let current = frame_mut!();
@@ -300,7 +307,7 @@ impl WasmCompiler {
           // Continue
         },
 
-        JumpIfFalse => {
+        Named(JumpIfFalse) => {
           todo!("Not yet implemented: JUMPIFFALSE");
           //let offset = read_u16!() as usize;
           //let value = self.peek(0);
@@ -311,12 +318,12 @@ impl WasmCompiler {
           //Continue
         },
 
-        Less => {
+        Named(Less) => {
           todo!("Not yet implemented: LESS");
           //binary_op!(Boolean, <)
         },
 
-        Loop => {
+        Named(Loop) => {
           todo!("Not yet implemented: LOOP");
           //let offset = read_u16!() as usize;
           //let current = frame_mut!();
@@ -324,19 +331,19 @@ impl WasmCompiler {
           //Continue
         },
 
-        Method => {
+        Named(Method) => {
           todo!("Not yet implemented: METHODCODE");
           //let (_, method_name_gc_ptr) = read_string!();
           //self.define_method(method_name_gc_ptr);
           //Continue
         },
 
-        Multiply => {
+        Named(Multiply) => {
           todo!("Not yet implemented: MULTIPLY");
           //binary_op!(Double, *)
         },
 
-        Negate => {
+        Named(Negate) => {
           todo!("Not yet implemented: NEGATE");
           //if let Double(x) = self.peek(0) {
           //  let _ = self.pop();
@@ -346,29 +353,29 @@ impl WasmCompiler {
           //}
         },
 
-        Nil => {
+        Named(Nil) => {
           main.instructions().i32_const(NIL_TYPE);
           main.instructions().i32_const(0);
           self.stack.push_nil();
         },
 
-        Not => {
+        Named(Not) => {
           todo!("Not yet implemented: NOT");
           //push_and_win!(Boolean(is_falsey(&self.pop())))
         },
 
-        Pop => {
+        Named(Pop) => {
           todo!("Not yet implemented: POP");
           //let _ = self.pop();
           //Continue
         },
 
-        Print => {
+        Named(Print) => {
           main.instructions().call(print_fn_index);
           self.stack.pop();
         },
 
-        Return => {
+        Named(Return) => {
           if self.stack.is_empty() {
             main.instructions().i32_const(NIL_TYPE);
             main.instructions().i32_const(0);
@@ -378,7 +385,7 @@ impl WasmCompiler {
           main.instructions().return_();
         },
 
-        SetGlobal => {
+        Named(SetGlobal) => {
           todo!("Not yet implemented: SETGLOBAL");
           //let (name, name_gc_ptr) = read_string!();
           //let value = self.peek(0);
@@ -392,7 +399,7 @@ impl WasmCompiler {
           //}
         },
 
-        SetLocal => {
+        Named(SetLocal) => {
           todo!("Not yet implemented: SETLOCAL");
           //let slot_num = read_u8!();
           //let slots_ptr = frame!().slots_ptr;
@@ -401,7 +408,7 @@ impl WasmCompiler {
           //Continue
         },
 
-        SetProperty => {
+        Named(SetProperty) => {
           todo!("Not yet implemented: SETPROPERTY");
           //if let Reference(GcPtr(instance_gc_ptr)) = self.peek(1)
           //  && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
@@ -418,7 +425,7 @@ impl WasmCompiler {
           //}
         },
 
-        SetUpvalue => {
+        Named(SetUpvalue) => {
           todo!("Not yet implemented: SETUPVALUE");
           //let slot = read_u8!() as usize;
           //let closure = frame_mut!().closure();
@@ -431,12 +438,12 @@ impl WasmCompiler {
           //Continue
         },
 
-        Subtract => {
+        Named(Subtract) => {
           todo!("Not yet implemented: SUBTRACT");
           //binary_op!(Double, -)
         },
 
-        SuperInvoke => {
+        Named(SuperInvoke) => {
           todo!("Not yet implemented: SUPERINVOKE");
           // let (name, _) = read_string!();
           // let arg_count = read_u8!();
@@ -450,7 +457,7 @@ impl WasmCompiler {
           // self.invoke_from_class(class, name, arg_count).unwrap_or(Continue)
         },
 
-        True => {
+        Named(True) => {
           main.instructions().i32_const(BOOLEAN_TYPE);
           main.instructions().i32_const(TRUE_VALUE);
           self.stack.push_boolean();
