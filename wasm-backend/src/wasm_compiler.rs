@@ -51,7 +51,8 @@ impl WasmCompiler {
   #[allow(clippy::too_many_lines)]
   pub(super) fn run(&mut self, compilation: &Compilation) -> Vec<u8> {
     let Compilation { strings: _strings, main: chunk } = compilation;
-    let bytecode: &Vec<Byte> = &chunk.line_data.values().flat_map(Clone::clone).collect();
+    let bytecode_pairs: &Vec<(u32, Byte)> =
+      &chunk.line_data.iter().flat_map(|(i, xs)| xs.iter().map(|x| (*i, *x))).collect();
 
     let mut module = Module::new();
 
@@ -144,7 +145,8 @@ impl WasmCompiler {
     }
 
     println!("===   DEBUG BYTECODE   ===");
-    for code in bytecode {
+    for (i, code) in bytecode_pairs {
+      print!("{i:>3} ");
       match code {
         Raw(num) => println!("{num}"),
         Named(x) => println!("{x}"),
@@ -154,8 +156,8 @@ impl WasmCompiler {
 
     let mut bc_index = 0;
 
-    while bc_index < bytecode.len() {
-      let code = bytecode[bc_index];
+    while bc_index < bytecode_pairs.len() {
+      let (_line_num, code) = bytecode_pairs[bc_index];
 
       match code {
         Raw(num) => {
@@ -238,7 +240,7 @@ impl WasmCompiler {
 
         Named(Constant) => {
           bc_index += 1;
-          let Raw(const_index) = bytecode[bc_index] else {
+          let (_, Raw(const_index)) = bytecode_pairs[bc_index] else {
             panic!("`Constant`'s operand must be a raw number");
           };
 
