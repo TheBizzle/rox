@@ -24,11 +24,14 @@ use crate::runtime::heap_object::FunctionObj::{self, MainScript, UserDefined};
 use crate::runtime::heap_object::HeapObject::HeapString;
 use crate::runtime::value::Value::{self, Double, Reference};
 
+pub mod compilation;
 pub mod disassembler;
 pub mod function_kind;
 pub mod program;
 
 mod precedence;
+
+use compilation::{Compilation, crawl_root};
 
 use disassembler::disassemble_chunk;
 
@@ -83,7 +86,7 @@ impl Compiler {
     self.parser.take_wasm_output()
   }
 
-  pub fn run(&mut self, source: String) -> Option<(*mut FunctionObj, *mut GcObject)> {
+  pub fn run(&mut self, source: String) -> Option<(Compilation, *mut GcObject)> {
     self.parser = Parser::new(source);
     self.parser.advance();
 
@@ -91,8 +94,9 @@ impl Compiler {
       self.parse_declaration();
     }
 
-    let result_ptr = self.end();
-    (!self.parser.had_error).then_some(result_ptr)
+    let (_, gc_ptr) = self.end();
+    let compilation = crawl_root(gc_ptr);
+    (!self.parser.had_error).then_some((compilation, gc_ptr))
   }
 
   fn end(&mut self) -> (*mut FunctionObj, *mut GcObject) {

@@ -148,8 +148,8 @@ impl VM {
   /// When there was a compilation error
   pub fn serialize(source: String) -> Result<String, Vec<Output>> {
     let mut compiler = Compiler::default();
-    if let Some((_, function_gc_ptr)) = compiler.run(source) {
-      Ok(serialize_root(function_gc_ptr))
+    if let Some((compilation, _)) = compiler.run(source) {
+      Ok(serialize_root(&compilation))
     } else {
       Err(compiler.take_wasm_output())
     }
