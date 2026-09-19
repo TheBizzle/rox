@@ -84,6 +84,22 @@ impl WasmCompiler {
     let mut code = CodeSection::new();
     let mut main = Function::new([]);
 
+    macro_rules! push_bool {
+      ($boolean: ident) => {{
+        main.instructions().i32_const(Type::Boolean as i32);
+        main.instructions().i32_const(Boolean::$boolean as i32);
+        self.stack.push_boolean();
+      }};
+    }
+
+    macro_rules! push_nil {
+      () => {{
+        main.instructions().i32_const(Type::Nil as i32);
+        main.instructions().i32_const(NIL);
+        self.stack.push_nil();
+      }};
+    }
+
     println!("===   DEBUG BYTECODE   ===");
     for code in bytecode {
       match code {
@@ -200,9 +216,7 @@ impl WasmCompiler {
         },
 
         Named(False) => {
-          main.instructions().i32_const(Type::Boolean as i32);
-          main.instructions().i32_const(Boolean::False as i32);
-          self.stack.push_boolean();
+          push_bool!(False);
         },
 
         Named(FnCall) => {
@@ -374,9 +388,7 @@ impl WasmCompiler {
         },
 
         Named(Nil) => {
-          main.instructions().i32_const(Type::Nil as i32);
-          main.instructions().i32_const(NIL);
-          self.stack.push_nil();
+          push_nil!();
         },
 
         Named(Not) => {
@@ -397,11 +409,9 @@ impl WasmCompiler {
 
         Named(Return) => {
           if self.stack.is_empty() {
-            main.instructions().i32_const(Type::Nil as i32);
-            main.instructions().i32_const(NIL);
-          } else {
-            self.stack.pop();
+            push_nil!();
           }
+          self.stack.pop();
           main.instructions().return_();
         },
 
@@ -478,9 +488,7 @@ impl WasmCompiler {
         },
 
         Named(True) => {
-          main.instructions().i32_const(Type::Boolean as i32);
-          main.instructions().i32_const(Boolean::True as i32);
-          self.stack.push_boolean();
+          push_bool!(True);
         },
       }
     }
