@@ -200,6 +200,29 @@ impl WasmCompiler {
         self.stack.push_nil();
       }};
     }
+    macro_rules! push_boolean_as_any {
+      () => {{
+        function.instructions().i64_extend_i32_u().i32_const(Type::Boolean as i32);
+        self.stack.pop();
+        self.stack.push_any();
+      }};
+    }
+
+    macro_rules! push_nil_as_any {
+      () => {{
+        function.instructions().i64_extend_i32_u().i32_const(Type::Nil as i32);
+        self.stack.pop();
+        self.stack.push_any();
+      }};
+    }
+
+    macro_rules! push_number_as_any {
+      () => {{
+        function.instructions().i64_reinterpret_f64().i32_const(Type::Number as i32);
+        self.stack.pop();
+        self.stack.push_any();
+      }};
+    }
 
     for (i, constant) in chunk.constants.iter().enumerate() {
       let mut instrs = function.instructions();
@@ -243,26 +266,26 @@ impl WasmCompiler {
           cfs.pop();
         },
         Some(Or { target }) if &bc_index == target => {
+          let was_bool = self.stack.peek_boolean(0);
+
           if self.stack.peek_any(0) {
             // Already encoded
           } else if self.stack.peek_boolean(0) {
-            function
-              .instructions()
-              .i64_extend_i32_u()
-              .i32_const(Type::Boolean as i32)
-              .end()
-              .drop()
-              .i32_wrap_i64();
+            push_boolean_as_any!();
           } else if self.stack.peek_nil(0) {
-            function.instructions().i64_extend_i32_u().i32_const(Type::Nil as i32).end();
-            self.stack.pop();
-            self.stack.push_any();
+            push_nil_as_any!();
           } else if self.stack.peek_number(0) {
-            function.instructions().i64_reinterpret_f64().i32_const(Type::Number as i32).end();
-            self.stack.pop();
-            self.stack.push_any();
+            push_number_as_any!();
           } else {
             todo!("Unhandled result type in `or`");
+          }
+
+          function.instructions().end();
+
+          if was_bool {
+            function.instructions().drop().i32_wrap_i64();
+            self.stack.pop();
+            self.stack.push_boolean();
           }
 
           cfs.pop();
@@ -273,15 +296,11 @@ impl WasmCompiler {
           if self.stack.peek_any(0) {
             // Already encoded
           } else if self.stack.peek_boolean(0) {
-            function.instructions().i64_extend_i32_u().i32_const(Type::Boolean as i32);
+            push_boolean_as_any!();
           } else if self.stack.peek_nil(0) {
-            function.instructions().i64_extend_i32_u().i32_const(Type::Nil as i32);
-            self.stack.pop();
-            self.stack.push_any();
+            push_nil_as_any!();
           } else if self.stack.peek_number(0) {
-            function.instructions().i64_reinterpret_f64().i32_const(Type::Number as i32);
-            self.stack.pop();
-            self.stack.push_any();
+            push_number_as_any!();
           } else {
             todo!("Unhandled result type in `and`");
           }
@@ -295,6 +314,8 @@ impl WasmCompiler {
 
           if was_bool {
             function.instructions().drop().i32_wrap_i64();
+            self.stack.pop();
+            self.stack.push_boolean();
           }
 
           cfs.pop();
