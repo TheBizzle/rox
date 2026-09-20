@@ -55,8 +55,9 @@ enum ControlFlow {
   PartialIf,
   IfElse { target: usize },
   Or { target: usize },
+  And { target: usize },
 }
-use ControlFlow::{IfElse, Or, PartialIf};
+use ControlFlow::{And, IfElse, Or, PartialIf};
 
 impl WasmCompiler {
   pub(super) const fn new() -> Self {
@@ -262,6 +263,38 @@ impl WasmCompiler {
             self.stack.push_any();
           } else {
             todo!("Unhandled result type in `or`");
+          }
+
+          cfs.pop();
+        },
+        Some(And { target }) if &bc_index == target => {
+          let was_bool = self.stack.peek_boolean(0);
+
+          if self.stack.peek_any(0) {
+            // Already encoded
+          } else if self.stack.peek_boolean(0) {
+            function.instructions().i64_extend_i32_u().i32_const(Type::Boolean as i32);
+          } else if self.stack.peek_nil(0) {
+            function.instructions().i64_extend_i32_u().i32_const(Type::Nil as i32);
+            self.stack.pop();
+            self.stack.push_any();
+          } else if self.stack.peek_number(0) {
+            function.instructions().i64_reinterpret_f64().i32_const(Type::Number as i32);
+            self.stack.pop();
+            self.stack.push_any();
+          } else {
+            todo!("Unhandled result type in `and`");
+          }
+
+          function
+            .instructions()
+            .else_()
+            .i64_const(Boolean::False as i64)
+            .i32_const(Type::Boolean as i32)
+            .end();
+
+          if was_bool {
+            function.instructions().drop().i32_wrap_i64();
           }
 
           cfs.pop();
@@ -552,27 +585,42 @@ impl WasmCompiler {
         },
 
         Named(JumpIfFalse) => {
-          if let Some((_, Raw(_))) = bytecode_pairs.get(bc_index + 1)
-            && let Some((_, Raw(_))) = bytecode_pairs.get(bc_index + 2)
+          if let Some((_, Raw(upper_bits))) = bytecode_pairs.get(bc_index + 1)
+            && let Some((_, Raw(lower_bits))) = bytecode_pairs.get(bc_index + 2)
             && let Some((_, Named(Pop))) = bytecode_pairs.get(bc_index + 3)
           {
-            cfs.push(PartialIf);
-
             bc_index += 3;
+            let jump_distance = u16::from_be_bytes([*upper_bits, *lower_bits]);
+            if let Some((_, Named(Jump))) = bytecode_pairs.get(bc_index - 3 + jump_distance as usize) {
+              cfs.push(PartialIf);
 
-            if self.stack.peek_nil(0) {
-              function.instructions().drop();
-              self.stack.pop();
-              push_bool!(False);
-            } else if self.stack.peek_boolean(0) {
-              function.instructions().i32_eqz().i32_eqz();
+              if self.stack.peek_nil(0) {
+                function.instructions().drop();
+                self.stack.pop();
+                push_bool!(False);
+              } else if self.stack.peek_boolean(0) {
+                function.instructions().i32_eqz().i32_eqz();
+              } else {
+                function.instructions().drop();
+                self.stack.pop();
+                push_bool!(True);
+              }
+
+              function.instructions().if_(BlockType::Empty);
             } else {
-              function.instructions().drop();
-              self.stack.pop();
-              push_bool!(True);
+              // `and`
+              if self.stack.peek_nil(0) {
+                bc_index += usize::from(jump_distance - 1);
+              } else if self.stack.peek_boolean(0) {
+                cfs.push(And { target: bc_index + usize::from(jump_distance) });
+                function.instructions().if_(BlockType::FunctionType(logical_type_index));
+              } else if self.stack.peek_number(0) {
+                function.instructions().drop();
+                self.stack.pop();
+              } else {
+                todo!("Dunno what this is");
+              }
             }
-
-            function.instructions().if_(BlockType::Empty);
           } else if let Some((_, Raw(_))) = bytecode_pairs.get(bc_index + 1)
             && let Some((_, Raw(_))) = bytecode_pairs.get(bc_index + 2)
             && let Some((_, Named(Jump))) = bytecode_pairs.get(bc_index + 3)
