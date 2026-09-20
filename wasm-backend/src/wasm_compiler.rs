@@ -503,6 +503,25 @@ impl WasmCompiler {
             }
 
             function.instructions().if_(BlockType::Empty);
+          } else if let Some((_, Raw(_))) = bytecode_pairs.get(bc_index + 1)
+            && let Some((_, Raw(_))) = bytecode_pairs.get(bc_index + 2)
+            && let Some((_, Named(Jump))) = bytecode_pairs.get(bc_index + 3)
+            && let Some((_, Raw(upper_bits))) = bytecode_pairs.get(bc_index + 4)
+            && let Some((_, Raw(lower_bits))) = bytecode_pairs.get(bc_index + 5)
+            && let Some((_, Named(Pop))) = bytecode_pairs.get(bc_index + 6)
+          {
+            bc_index += 6;
+            if self.stack.peek_nil(0) {
+              function.instructions().drop();
+              self.stack.pop();
+            } else if self.stack.peek_boolean(0) {
+              todo!("Booleans are trickier");
+            } else if self.stack.peek_number(0) {
+              let jump_distance = u16::from_be_bytes([*upper_bits, *lower_bits]);
+              bc_index += usize::from(jump_distance - 1);
+            } else {
+              todo!("Dunno what this is");
+            }
           } else {
             panic!("Unrecognized `if`-like control flow statement");
           }
