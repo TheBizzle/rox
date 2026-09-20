@@ -1,8 +1,8 @@
 use strum::FromRepr;
 
 use wasm_encoder::{
-  CodeSection, DataSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, Ieee64,
-  ImportSection, MemorySection, MemoryType, Module, TypeSection, ValType,
+  BlockType, CodeSection, DataSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
+  Ieee64, ImportSection, MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 
 use rox_lib::core::byte::Byte::{self, Named, Raw};
@@ -50,6 +50,12 @@ enum ErrorMsg {
   OperandsMustBeNumbers,
   OperandsMustBeNumsOrStrs,
 }
+
+enum ControlFlow {
+  PartialIf,
+  IfElse { target: usize },
+}
+use ControlFlow::{IfElse, PartialIf};
 
 impl WasmCompiler {
   pub(super) const fn new() -> Self {
@@ -181,10 +187,18 @@ impl WasmCompiler {
     }
     println!("=== END DEBUG BYTECODE ===");
 
+    let mut cfs = Vec::new();
     let mut bc_index = 0;
     let mut this_is_fine = true;
 
     while this_is_fine && bc_index < bytecode_pairs.len() {
+      if let Some(IfElse { target }) = cfs.last()
+        && &bc_index == target
+      {
+        function.instructions().end();
+        cfs.pop();
+      }
+
       let (line_num, code) = bytecode_pairs[bc_index];
 
       macro_rules! runtime_error {
@@ -449,24 +463,49 @@ impl WasmCompiler {
         },
 
         Named(Jump) => {
-          todo!("Not yet implemented: JUMP");
-          // let offset = read_u16!();
-          // let current = frame_mut!();
-          // unsafe {
-          //   current.inst_ptr = current.inst_ptr.add(offset as usize);
-          // }
-          // Continue
+          if matches!(cfs.last(), Some(PartialIf))
+            && let Some((_, Raw(upper_bits))) = bytecode_pairs.get(bc_index + 1)
+            && let Some((_, Raw(lower_bits))) = bytecode_pairs.get(bc_index + 2)
+            && let Some((_, Named(Pop))) = bytecode_pairs.get(bc_index + 3)
+          {
+            let jump_distance = u16::from_be_bytes([*upper_bits, *lower_bits]);
+
+            bc_index += 3;
+
+            let len = cfs.len();
+            cfs[len - 1] = IfElse { target: bc_index + (jump_distance as usize) };
+
+            function.instructions().else_();
+          } else {
+            panic!("Unrecognized `else`-like control flow statement");
+          }
         },
 
         Named(JumpIfFalse) => {
-          todo!("Not yet implemented: JUMPIFFALSE");
-          //let offset = read_u16!() as usize;
-          //let value = self.peek(0);
-          //let current = frame_mut!();
-          //if is_falsey(&value) {
-          //  current.inst_ptr = unsafe { current.inst_ptr.add(offset) };
-          //}
-          //Continue
+          if let Some((_, Raw(_))) = bytecode_pairs.get(bc_index + 1)
+            && let Some((_, Raw(_))) = bytecode_pairs.get(bc_index + 2)
+            && let Some((_, Named(Pop))) = bytecode_pairs.get(bc_index + 3)
+          {
+            cfs.push(PartialIf);
+
+            bc_index += 3;
+
+            if self.stack.peek_nil(0) {
+              function.instructions().drop();
+              self.stack.pop();
+              push_bool!(False);
+            } else if self.stack.peek_boolean(0) {
+              function.instructions().i32_eqz().i32_eqz();
+            } else {
+              function.instructions().drop();
+              self.stack.pop();
+              push_bool!(True);
+            }
+
+            function.instructions().if_(BlockType::Empty);
+          } else {
+            panic!("Unrecognized `if`-like control flow statement");
+          }
         },
 
         Named(Less) => {
