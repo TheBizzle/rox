@@ -54,8 +54,9 @@ enum ErrorMsg {
 enum ControlFlow {
   PartialIf,
   IfElse { target: usize },
+  Or { target: usize },
 }
-use ControlFlow::{IfElse, PartialIf};
+use ControlFlow::{IfElse, Or, PartialIf};
 
 impl WasmCompiler {
   pub(super) const fn new() -> Self {
@@ -92,6 +93,9 @@ impl WasmCompiler {
 
     let print_number_type_index = types.len();
     types.ty().function([ValType::F64], []);
+
+    let logical_type_index = types.len();
+    types.ty().function([], [ValType::I64, ValType::I32]);
 
     let print_type_index = types.len();
     types.ty().function([ValType::I64, ValType::I32], []);
@@ -232,11 +236,37 @@ impl WasmCompiler {
     let mut this_is_fine = true;
 
     while this_is_fine && bc_index < bytecode_pairs.len() {
-      if let Some(IfElse { target }) = cfs.last()
-        && &bc_index == target
-      {
-        function.instructions().end();
-        cfs.pop();
+      match cfs.last() {
+        Some(IfElse { target }) if &bc_index == target => {
+          function.instructions().end();
+          cfs.pop();
+        },
+        Some(Or { target }) if &bc_index == target => {
+          if self.stack.peek_any(0) {
+            // Already encoded
+          } else if self.stack.peek_boolean(0) {
+            function
+              .instructions()
+              .i64_extend_i32_u()
+              .i32_const(Type::Boolean as i32)
+              .end()
+              .drop()
+              .i32_wrap_i64();
+          } else if self.stack.peek_nil(0) {
+            function.instructions().i64_extend_i32_u().i32_const(Type::Nil as i32).end();
+            self.stack.pop();
+            self.stack.push_any();
+          } else if self.stack.peek_number(0) {
+            function.instructions().i64_reinterpret_f64().i32_const(Type::Number as i32).end();
+            self.stack.pop();
+            self.stack.push_any();
+          } else {
+            todo!("Unhandled result type in `or`");
+          }
+
+          cfs.pop();
+        },
+        _ => {},
       }
 
       let (line_num, code) = bytecode_pairs[bc_index];
@@ -555,7 +585,14 @@ impl WasmCompiler {
               function.instructions().drop();
               self.stack.pop();
             } else if self.stack.peek_boolean(0) {
-              todo!("Booleans are trickier");
+              let jump_distance = u16::from_be_bytes([*upper_bits, *lower_bits]);
+              cfs.push(Or { target: bc_index + usize::from(jump_distance) });
+              function
+                .instructions()
+                .if_(BlockType::FunctionType(logical_type_index))
+                .i64_const(Boolean::True as i64)
+                .i32_const(Type::Boolean as i32)
+                .else_();
             } else if self.stack.peek_number(0) {
               let jump_distance = u16::from_be_bytes([*upper_bits, *lower_bits]);
               bc_index += usize::from(jump_distance - 1);
