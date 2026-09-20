@@ -16,7 +16,7 @@ categories = ["development-tools"]
 publish = false
 
 [dependencies]
-strum = { version = "0.28", features = ["derive"] }
+strum = { version = "0.28", features = ["derive", "strum_macros"] }
 tokio = { version = "1.52.3", features = ["io-std", "macros", "rt-multi-thread"] }
 wasm-encoder = "0.259"
 wasmparser = "0.259"

@@ -1,4 +1,4 @@
-use strum::FromRepr;
+use strum::{EnumCount, EnumIter, FromRepr, IntoEnumIterator};
 
 use wasm_encoder::{
   BlockType, CodeSection, DataSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
@@ -24,7 +24,7 @@ pub struct WasmCompiler {
   stack: ShadowStack,
 }
 
-#[derive(FromRepr, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(EnumCount, EnumIter, FromRepr, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 enum Type {
   Nil,
@@ -93,6 +93,9 @@ impl WasmCompiler {
     let print_number_type_index = types.len();
     types.ty().function([ValType::F64], []);
 
+    let print_type_index = types.len();
+    types.ty().function([ValType::I64, ValType::I32], []);
+
     let main_type_index = types.len();
     types.ty().function([], [ValType::I32, ValType::I32]);
 
@@ -108,6 +111,8 @@ impl WasmCompiler {
     module.section(&imports);
 
     let mut functions = FunctionSection::new();
+    let print_fn_index = imports.len() + functions.len();
+    functions.function(print_type_index);
     let main_fn_index = imports.len() + functions.len();
     functions.function(main_type_index);
     module.section(&functions);
@@ -124,6 +129,41 @@ impl WasmCompiler {
     });
 
     let mut code = CodeSection::new();
+
+    let mut print_fn = Function::new([]);
+    print_fn.instructions()
+      .block(BlockType::Empty)
+        .block(BlockType::Empty)
+          .block(BlockType::Empty)
+            .block(BlockType::Empty)
+              .block(BlockType::Empty)
+                .local_get(1)
+                .br_table(Type::iter().map(|t| t as u32), u32::try_from(Type::COUNT).unwrap())
+              .end()
+              .local_get(0) // 0: Nil
+              .i32_wrap_i64()
+              .i32_const(Type::Nil as i32)
+              .call(print_int_fn_index)
+              .br(4)
+              .end()
+            .local_get(0) // 1: Boolean
+            .i32_wrap_i64()
+            .i32_const(Type::Boolean as i32)
+            .call(print_int_fn_index)
+            .br(3)
+            .end()
+          .local_get(0) // 2: Number
+          .f64_reinterpret_i64()
+          .call(print_number_fn_index)
+          .br(2)
+          .end()
+        .unreachable() // 3: Reference
+        .br(1)
+        .unreachable() // 4: No-match
+        .end()
+      .end();
+    code.function(&print_fn);
+
     let mut function = Function::new(fn_constant_defs);
 
     macro_rules! push_type {
@@ -595,14 +635,15 @@ impl WasmCompiler {
         },
 
         Named(Print) => {
-          let fn_index = if self.stack.peek_number(0) {
-            print_number_fn_index
+          if self.stack.peek_number(0) {
+            function.instructions().call(print_number_fn_index);
+          } else if self.stack.peek_any(0) {
+            function.instructions().call(print_fn_index);
           } else {
             push_type!();
             self.stack.pop();
-            print_int_fn_index
-          };
-          function.instructions().call(fn_index);
+            function.instructions().call(print_int_fn_index);
+          }
           self.stack.pop();
         },
 
