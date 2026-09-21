@@ -1,8 +1,11 @@
+use std::collections::{HashMap, VecDeque};
+
 use strum::{EnumCount, EnumIter, FromRepr, IntoEnumIterator};
 
 use wasm_encoder::{
-  BlockType, CodeSection, DataSection, EntityType, ExportKind, ExportSection, Function, FunctionSection,
-  Ieee64, ImportSection, MemorySection, MemoryType, Module, TypeSection, ValType,
+  BlockType, CodeSection, ConstExpr, DataSection, EntityType, ExportKind, ExportSection, Function,
+  FunctionSection, GlobalSection, GlobalType, Ieee64, ImportSection, InstructionSink, MemorySection,
+  MemoryType, Module, TypeSection, ValType,
 };
 
 use rox_lib::core::byte::Byte::{self, Named, Raw};
@@ -15,7 +18,7 @@ use rox_lib::core::opcode::OpCode::{
 
 use rox_lib::compiler::compilation::Compilation;
 use rox_lib::compiler::compilation::CompiledValue::{
-  CompiledBoolean, CompiledFunction, CompiledNil, CompiledNumber, CompiledString,
+  self, CompiledBoolean, CompiledFunction, CompiledNil, CompiledNumber, CompiledString,
 };
 
 use super::shadow_stack::ShadowStack;
@@ -24,14 +27,74 @@ pub struct WasmCompiler {
   stack: ShadowStack,
 }
 
-#[derive(EnumCount, EnumIter, FromRepr, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Debug)]
+enum InitialValue {
+  ConstReference(u8),
+  Nil,
+}
+
+#[allow(dead_code)]
+enum WasmConst {
+  I32(i32),
+  I64(i64),
+  F64(Ieee64),
+}
+
+impl WasmConst {
+  pub fn const_expr(&self) -> ConstExpr {
+    match self {
+      Self::I32(x) => ConstExpr::i32_const(*x),
+      Self::I64(x) => ConstExpr::i64_const(*x),
+      Self::F64(x) => ConstExpr::f64_const(*x),
+    }
+  }
+
+  pub fn encode_push_into(&self, instrs: &mut InstructionSink) {
+    match self {
+      Self::I32(x) => instrs.i32_const(*x),
+      Self::I64(x) => instrs.i64_const(*x),
+      Self::F64(x) => instrs.f64_const(*x),
+    };
+  }
+
+  pub const fn val_type(&self) -> ValType {
+    match self {
+      Self::I32(..) => ValType::I32,
+      Self::I64(..) => ValType::I64,
+      Self::F64(..) => ValType::F64,
+    }
+  }
+}
+
+#[derive(Clone, Debug, EnumCount, EnumIter, FromRepr, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 enum Type {
   Nil,
   Boolean,
   Number,
-  _Reference,
+  Reference,
   _Raw,
+}
+
+impl Type {
+  pub const fn from_compiled(value: &CompiledValue) -> Self {
+    #[allow(clippy::match_same_arms)]
+    match value {
+      CompiledBoolean(..) => Self::Boolean,
+      CompiledFunction { .. } => Self::Reference,
+      CompiledNil => Self::Nil,
+      CompiledNumber(..) => Self::Number,
+      CompiledString(..) => Self::Reference,
+    }
+  }
+
+  pub fn val_type(&self) -> ValType {
+    match self {
+      Self::Boolean | Self::Nil => ValType::I32,
+      Self::Number => ValType::F64,
+      _ => todo!("No such val_type... yet"),
+    }
+  }
 }
 
 const NIL: i32 = 0;
@@ -124,14 +187,82 @@ impl WasmCompiler {
 
     module.section(&memories);
 
+    let mut globals = GlobalSection::new();
+    let global_ids: Vec<_> = chunk
+      .line_data
+      .values()
+      .flatten()
+      .collect::<Vec<_>>()
+      .windows(3)
+      .filter_map(|trio| {
+        if let [Raw(init), Named(DefineGlobal), Raw(id)] = trio {
+          Some((InitialValue::ConstReference(*init), id))
+        } else if let [Named(Nil), Named(DefineGlobal), Raw(id)] = trio {
+          Some((InitialValue::Nil, id))
+        } else if let [x, Named(DefineGlobal), Raw(_id)] = trio {
+          todo!("Unknown constant initializer: {x:?}");
+        } else {
+          None
+        }
+      })
+      .collect();
+
     #[allow(clippy::match_same_arms)]
-    let fn_constant_defs = chunk.constants.iter().map(|c| match c {
-      CompiledBoolean(..) => (1, ValType::I32),
-      CompiledFunction { .. } => todo!("Function constants are not yet supported"),
-      CompiledNil => (1, ValType::I32),
-      CompiledNumber(..) => (1, ValType::F64),
-      CompiledString(..) => todo!("String constants are not yet supported"),
-    });
+    let constant_info: Vec<_> = chunk
+      .constants
+      .iter()
+      .map(|c| match c {
+        CompiledBoolean(boolean) => {
+          let value = if *boolean {
+            Boolean::True
+          } else {
+            Boolean::False
+          };
+          WasmConst::I32(value as i32)
+        },
+        CompiledFunction { .. } => todo!("Function constants are not yet supported"),
+        CompiledNil => WasmConst::I32(NIL),
+        CompiledNumber(x) => WasmConst::F64(Ieee64::new(x.to_bits())),
+        CompiledString(..) => WasmConst::I32(Boolean::True as i32),
+      })
+      .collect();
+
+    let mut globals_map: HashMap<u8, (u32, ConstExpr, Option<Type>)> = HashMap::new();
+
+    let mut globals_queue = VecDeque::from(global_ids);
+
+    while let Some((init, id)) = globals_queue.pop_front() {
+      let index = globals.len();
+      let (gtype, gexpr, ltype) = match init {
+        InitialValue::ConstReference(ref_id) if let Some((_, expr, lox_type)) = globals_map.get(&ref_id) => {
+          let val_type = lox_type.as_ref().unwrap().val_type();
+          let global_type = GlobalType { val_type, mutable: false, shared: false };
+          (global_type, expr.clone(), lox_type.clone())
+        },
+        InitialValue::ConstReference(ref_id)
+          if let Some(CompiledBoolean(_) | CompiledNil | CompiledNumber(..)) =
+            chunk.constants.get(ref_id as usize) =>
+        {
+          let value = &constant_info[ref_id as usize];
+          let val_type = value.val_type();
+          let global_type = GlobalType { val_type, mutable: false, shared: false };
+          let lox_type = Some(Type::from_compiled(&chunk.constants[ref_id as usize]));
+          (global_type, value.const_expr(), lox_type)
+        },
+        InitialValue::ConstReference(_) => {
+          globals_queue.push_back((init, id));
+          break;
+        },
+        InitialValue::Nil => {
+          let global_type = GlobalType { val_type: ValType::I32, mutable: true, shared: false };
+          (global_type, ConstExpr::i32_const(NIL), Some(Type::Nil))
+        },
+      };
+      globals.global(gtype, &gexpr);
+      globals_map.insert(*id, (index, gexpr, ltype));
+    }
+
+    module.section(&globals);
 
     let mut code = CodeSection::new();
 
@@ -169,7 +300,15 @@ impl WasmCompiler {
       .end();
     code.function(&print_fn);
 
+    let fn_constant_defs: Vec<_> =
+      constant_info.iter().map(WasmConst::val_type).map(|typ| (1, typ)).collect();
     let mut function = Function::new(fn_constant_defs);
+
+    for (i, constant) in constant_info.iter().enumerate() {
+      let mut instrs = function.instructions();
+      constant.encode_push_into(&mut instrs);
+      instrs.local_set(u32::try_from(i).unwrap());
+    }
 
     macro_rules! push_type {
       () => {{
@@ -224,25 +363,17 @@ impl WasmCompiler {
       }};
     }
 
-    for (i, constant) in chunk.constants.iter().enumerate() {
-      let mut instrs = function.instructions();
-
-      let instrs2 = match constant {
-        CompiledBoolean(boolean) => {
-          let value = if *boolean {
-            Boolean::True
-          } else {
-            Boolean::False
-          };
-          instrs.i32_const(value as i32)
-        },
-        CompiledFunction { .. } => todo!("Function constants are not yet supported"),
-        CompiledNil => instrs.i32_const(NIL),
-        CompiledNumber(x) => instrs.f64_const(Ieee64::new(x.to_bits())),
-        CompiledString(..) => todo!("String constants are not yet supported"),
-      };
-
-      instrs2.local_set(u32::try_from(i).unwrap());
+    macro_rules! register_unknown {
+      ($typ: expr) => {{
+        match $typ {
+          Some(Type::Boolean) => self.stack.push_boolean(),
+          Some(Type::Nil) => self.stack.push_nil(),
+          Some(Type::Number) => self.stack.push_number(),
+          Some(Type::_Raw) => todo!("Does this type even still exist?"),
+          Some(Type::Reference) => todo!("References don't exist yet!"),
+          None => self.stack.push_any(),
+        }
+      }};
     }
 
     println!("===   DEBUG BYTECODE   ===");
@@ -423,12 +554,12 @@ impl WasmCompiler {
         },
 
         Named(DefineGlobal) => {
-          todo!("Not yet implemented: DEFINEGLOBAL");
-          // let value = self.peek(0);
-          // let (_, key_gc_ptr) = read_string!();
-          // self.compiler.heap.globals.set(key_gc_ptr, value);
-          // let _ = self.pop();
-          // Continue
+          function.instructions().drop();
+          if self.stack.peek_any(0) {
+            function.instructions().drop();
+          }
+          self.stack.pop();
+          bc_index += 1;
         },
 
         Named(Divide) => {
@@ -476,7 +607,22 @@ impl WasmCompiler {
         },
 
         Named(GetGlobal) => {
-          todo!("Not yet implemented: GETGLOBAL");
+          bc_index += 1;
+          if let (_, Raw(id)) = bytecode_pairs[bc_index] {
+            let (index, _, typ) = globals_map.get(&id).unwrap_or_else(|| panic!("Global ID {id} must exist"));
+            function.instructions().global_get(*index);
+            if typ.is_none() {
+              function
+                .instructions()
+                .i64x2_extract_lane(1)
+                .global_get(*index)
+                .i64x2_extract_lane(0)
+                .i32_wrap_i64();
+            }
+            register_unknown!(typ);
+          } else {
+            panic!("Impossible global retrieval that isn't followed by ID");
+          }
           // let (name, _) = read_string!();
           // if let Some(r) = self.compiler.heap.globals.get(name) {
           //   let value = unsafe { &*r }.clone();
