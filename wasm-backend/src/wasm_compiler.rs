@@ -621,6 +621,8 @@ impl WasmCompiler {
                 push_bool!(False);
               } else if self.stack.peek_boolean(0) {
                 function.instructions().i32_eqz().i32_eqz();
+              } else if self.stack.peek_any(0) {
+                todo!("Any go boom!");
               } else {
                 function.instructions().drop();
                 self.stack.pop();
@@ -638,6 +640,8 @@ impl WasmCompiler {
               } else if self.stack.peek_number(0) {
                 function.instructions().drop();
                 self.stack.pop();
+              } else if self.stack.peek_any(0) {
+                todo!("Any go boom!");
               } else {
                 todo!("Dunno what this is");
               }
@@ -665,6 +669,8 @@ impl WasmCompiler {
             } else if self.stack.peek_number(0) {
               let jump_distance = u16::from_be_bytes([*upper_bits, *lower_bits]);
               bc_index += usize::from(jump_distance - 1);
+            } else if self.stack.peek_any(0) {
+              todo!("Any go boom!");
             } else {
               todo!("Dunno what this is");
             }
@@ -727,6 +733,8 @@ impl WasmCompiler {
             push_bool!(True);
           } else if self.stack.peek_boolean(0) {
             function.instructions().i32_eqz();
+          } else if self.stack.peek_any(0) {
+            todo!("Any go boom!");
           } else {
             function.instructions().drop();
             self.stack.pop();
