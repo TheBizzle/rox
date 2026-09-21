@@ -150,22 +150,22 @@ impl WasmCompiler {
               .i32_const(Type::Nil as i32)
               .call(print_int_fn_index)
               .br(4)
-              .end()
+            .end()
             .local_get(0) // 1: Boolean
             .i32_wrap_i64()
             .i32_const(Type::Boolean as i32)
             .call(print_int_fn_index)
             .br(3)
-            .end()
+          .end()
           .local_get(0) // 2: Number
           .f64_reinterpret_i64()
           .call(print_number_fn_index)
           .br(2)
-          .end()
+        .end()
         .unreachable() // 3: Reference
         .br(1)
         .unreachable() // 4: No-match
-        .end()
+      .end()
       .end();
     code.function(&print_fn);
 
