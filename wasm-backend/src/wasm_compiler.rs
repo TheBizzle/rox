@@ -73,7 +73,7 @@ enum Type {
   Boolean,
   Number,
   Reference,
-  _Raw,
+  Raw,
 }
 
 impl Type {
@@ -369,7 +369,7 @@ impl WasmCompiler {
           Some(Type::Boolean) => self.stack.push_boolean(),
           Some(Type::Nil) => self.stack.push_nil(),
           Some(Type::Number) => self.stack.push_number(),
-          Some(Type::_Raw) => todo!("Does this type even still exist?"),
+          Some(Type::Raw) => todo!("Does this type even still exist?"),
           Some(Type::Reference) => todo!("References don't exist yet!"),
           None => self.stack.push_any(),
         }
