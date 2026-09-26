@@ -236,7 +236,7 @@ impl WasmCompiler {
       let (gtype, gexpr, ltype) = match init {
         InitialValue::ConstReference(ref_id) if let Some((_, expr, lox_type)) = globals_map.get(&ref_id) => {
           let val_type = lox_type.as_ref().unwrap().val_type();
-          let global_type = GlobalType { val_type, mutable: false, shared: false };
+          let global_type = GlobalType { val_type, mutable: true, shared: false };
           (global_type, expr.clone(), lox_type.clone())
         },
         InitialValue::ConstReference(ref_id)
@@ -245,7 +245,7 @@ impl WasmCompiler {
         {
           let value = &constant_info[ref_id as usize];
           let val_type = value.val_type();
-          let global_type = GlobalType { val_type, mutable: false, shared: false };
+          let global_type = GlobalType { val_type, mutable: true, shared: false };
           let lox_type = Some(Type::from_compiled(&chunk.constants[ref_id as usize]));
           (global_type, value.const_expr(), lox_type)
         },
@@ -339,6 +339,7 @@ impl WasmCompiler {
         self.stack.push_nil();
       }};
     }
+
     macro_rules! push_boolean_as_any {
       () => {{
         function.instructions().i64_extend_i32_u().i32_const(Type::Boolean as i32);
