@@ -365,6 +365,47 @@ impl WasmCompiler {
       }};
     }
 
+    macro_rules! push_boolean_as_v128 {
+      () => {{
+        function
+          .instructions()
+          .i32x4_splat()
+          .i32_const(0)
+          .i32x4_replace_lane(1)
+          .i32_const(0)
+          .i32x4_replace_lane(3)
+          .i32_const(Type::Boolean as i32)
+          .i32x4_replace_lane(2);
+      }};
+    }
+
+    macro_rules! push_nil_as_v128 {
+      () => {{
+        function
+          .instructions()
+          .i32x4_splat()
+          .i32_const(0)
+          .i32x4_replace_lane(1)
+          .i32_const(0)
+          .i32x4_replace_lane(3)
+          .i32_const(Type::Nil as i32)
+          .i32x4_replace_lane(2);
+      }};
+    }
+
+    macro_rules! push_number_as_v128 {
+      () => {{
+        function
+          .instructions()
+          .i64_reinterpret_f64()
+          .i64x2_splat()
+          .i32_const(0)
+          .i32x4_replace_lane(3)
+          .i32_const(Type::Number as i32)
+          .i32x4_replace_lane(2);
+      }};
+    }
+
     macro_rules! register_unknown {
       ($typ: expr) => {{
         match $typ {
@@ -916,17 +957,57 @@ impl WasmCompiler {
         },
 
         Named(SetGlobal) => {
-          todo!("Not yet implemented: SETGLOBAL");
-          //let (name, name_gc_ptr) = read_string!();
-          //let value = self.peek(0);
-          //let is_binding_new = self.compiler.heap.globals.set(name_gc_ptr, value);
+          bc_index += 1;
+          if let (_, Raw(id)) = bytecode_pairs[bc_index] {
+            bc_index += 1;
 
-          //if is_binding_new {
-          //  self.compiler.heap.globals.delete(name);
-          //  runtime_error!("Undefined variable '{}'.", name.to_text())
-          //} else {
-          //  Continue
-          //}
+            if let Some((index, _, typ)) = globals_map.get_mut(&id) {
+              match typ {
+                Some(Type::Reference) if self.stack.peek_nil(0) || self.stack.peek_reference(0) => {},
+                Some(Type::Nil) if self.stack.peek_reference(0) => {
+                  let _ = typ.replace(Type::Reference);
+                },
+                Some(Type::Nil) if self.stack.peek_nil(0) => {},
+                Some(Type::Number) if self.stack.peek_number(0) => {},
+                Some(Type::Boolean) if self.stack.peek_boolean(0) => {},
+                Some(Type::Raw) => {
+                  panic!("Impossible errant raw value");
+                },
+                None => {},
+                _ => {
+                  let _ = typ.take();
+                },
+              }
+
+              if typ.is_none() {
+                if self.stack.peek_any(0) {
+                  function
+                    .instructions()
+                    .global_set(*index)
+                    .i64x2_splat()
+                    .i32_const(0)
+                    .i32x4_replace_lane(3)
+                    .local_get(*index)
+                    .i64x2_replace_lane(0);
+                } else if self.stack.peek_boolean(0) {
+                  push_boolean_as_v128!();
+                } else if self.stack.peek_nil(0) {
+                  push_nil_as_v128!();
+                } else if self.stack.peek_number(0) {
+                  push_number_as_v128!();
+                } else {
+                  todo!("Unhandled result type when setting global");
+                }
+              }
+
+              function.instructions().global_set(*index);
+              self.stack.pop();
+            } else {
+              runtime_error!(ErrorMsg::UndefinedVariable as i32);
+            }
+          } else {
+            panic!("Impossible global retrieval that isn't followed by ID");
+          }
         },
 
         Named(SetLocal) => {
