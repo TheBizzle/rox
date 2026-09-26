@@ -112,6 +112,7 @@ enum ErrorMsg {
   OperandMustBeNumber,
   OperandsMustBeNumbers,
   OperandsMustBeNumsOrStrs,
+  UndefinedVariable,
 }
 
 enum ControlFlow {
@@ -610,27 +611,23 @@ impl WasmCompiler {
         Named(GetGlobal) => {
           bc_index += 1;
           if let (_, Raw(id)) = bytecode_pairs[bc_index] {
-            let (index, _, typ) = globals_map.get(&id).unwrap_or_else(|| panic!("Global ID {id} must exist"));
-            function.instructions().global_get(*index);
-            if typ.is_none() {
-              function
-                .instructions()
-                .i64x2_extract_lane(1)
-                .global_get(*index)
-                .i64x2_extract_lane(0)
-                .i32_wrap_i64();
+            if let Some((index, _, typ)) = globals_map.get_mut(&id) {
+              function.instructions().global_get(*index);
+              if typ.is_none() {
+                function
+                  .instructions()
+                  .i64x2_extract_lane(1)
+                  .global_get(*index)
+                  .i64x2_extract_lane(0)
+                  .i32_wrap_i64();
+              }
+              register_unknown!(typ);
+            } else {
+              runtime_error!(ErrorMsg::UndefinedVariable as i32);
             }
-            register_unknown!(typ);
           } else {
             panic!("Impossible global retrieval that isn't followed by ID");
           }
-          // let (name, _) = read_string!();
-          // if let Some(r) = self.compiler.heap.globals.get(name) {
-          //   let value = unsafe { &*r }.clone();
-          //   push_and_win!(value)
-          // } else {
-          //   runtime_error!("Undefined variable '{}'.", name.to_text())
-          // }
         },
 
         Named(GetLocal) => {

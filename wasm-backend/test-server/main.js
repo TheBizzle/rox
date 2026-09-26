@@ -15,6 +15,10 @@ const imports = {
           msg = "Operands must be two numbers or two strings.";
           break;
         }
+        case 3: {
+          msg = "Undefined variable.";
+          break;
+        }
         default: {
           console.warn("Unknown error ordinal: ", error_num);
         }
