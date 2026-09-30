@@ -41,11 +41,11 @@ enum WasmConst {
 }
 
 impl WasmConst {
-  pub fn const_expr(&self) -> ConstExpr {
+  pub fn as_v128(&self) -> ConstExpr {
     match self {
-      Self::I32(x) => ConstExpr::i32_const(*x),
-      Self::I64(x) => ConstExpr::i64_const(*x),
-      Self::F64(x) => ConstExpr::f64_const(*x),
+      Self::I32(x) => ConstExpr::v128_const(i128::from(*x) << 64),
+      Self::I64(x) => ConstExpr::v128_const(i128::from(*x) << 64),
+      Self::F64(x) => ConstExpr::v128_const(i128::from(x.bits()) << 64),
     }
   }
 
@@ -85,14 +85,6 @@ impl Type {
       CompiledNil => Self::Nil,
       CompiledNumber(..) => Self::Number,
       CompiledString(..) => Self::Reference,
-    }
-  }
-
-  pub fn val_type(&self) -> ValType {
-    match self {
-      Self::Boolean | Self::Nil => ValType::I32,
-      Self::Number => ValType::F64,
-      _ => todo!("No such val_type... yet"),
     }
   }
 }
@@ -234,31 +226,25 @@ impl WasmCompiler {
 
     while let Some((init, id)) = globals_queue.pop_front() {
       let index = globals.len();
-      let (gtype, gexpr, ltype) = match init {
+      let (gexpr, ltype) = match init {
         InitialValue::ConstReference(ref_id) if let Some((_, expr, lox_type)) = globals_map.get(&ref_id) => {
-          let val_type = lox_type.as_ref().unwrap().val_type();
-          let global_type = GlobalType { val_type, mutable: true, shared: false };
-          (global_type, expr.clone(), lox_type.clone())
+          (expr.clone(), lox_type.clone())
         },
         InitialValue::ConstReference(ref_id)
           if let Some(CompiledBoolean(_) | CompiledNil | CompiledNumber(..)) =
             chunk.constants.get(ref_id as usize) =>
         {
           let value = &constant_info[ref_id as usize];
-          let val_type = value.val_type();
-          let global_type = GlobalType { val_type, mutable: true, shared: false };
           let lox_type = Some(Type::from_compiled(&chunk.constants[ref_id as usize]));
-          (global_type, value.const_expr(), lox_type)
+          (value.as_v128(), lox_type)
         },
         InitialValue::ConstReference(_) => {
           globals_queue.push_back((init, id));
           break;
         },
-        InitialValue::Nil => {
-          let global_type = GlobalType { val_type: ValType::I32, mutable: true, shared: false };
-          (global_type, ConstExpr::i32_const(NIL), Some(Type::Nil))
-        },
+        InitialValue::Nil => (WasmConst::I32(NIL).as_v128(), Some(Type::Nil)),
       };
+      let gtype = GlobalType { val_type: ValType::V128, mutable: true, shared: false };
       globals.global(gtype, &gexpr);
       globals_map.insert(*id, (index, gexpr, ltype));
     }
@@ -370,12 +356,12 @@ impl WasmCompiler {
         function
           .instructions()
           .i32x4_splat()
+          .i32_const(Type::Boolean as i32)
+          .i32x4_replace_lane(0)
           .i32_const(0)
           .i32x4_replace_lane(1)
           .i32_const(0)
-          .i32x4_replace_lane(3)
-          .i32_const(Type::Boolean as i32)
-          .i32x4_replace_lane(2);
+          .i32x4_replace_lane(3);
       }};
     }
 
@@ -384,12 +370,12 @@ impl WasmCompiler {
         function
           .instructions()
           .i32x4_splat()
+          .i32_const(Type::Nil as i32)
+          .i32x4_replace_lane(0)
           .i32_const(0)
           .i32x4_replace_lane(1)
           .i32_const(0)
-          .i32x4_replace_lane(3)
-          .i32_const(Type::Nil as i32)
-          .i32x4_replace_lane(2);
+          .i32x4_replace_lane(3);
       }};
     }
 
@@ -399,23 +385,10 @@ impl WasmCompiler {
           .instructions()
           .i64_reinterpret_f64()
           .i64x2_splat()
-          .i32_const(0)
-          .i32x4_replace_lane(3)
           .i32_const(Type::Number as i32)
-          .i32x4_replace_lane(2);
-      }};
-    }
-
-    macro_rules! register_unknown {
-      ($typ: expr) => {{
-        match $typ {
-          Some(Type::Boolean) => self.stack.push_boolean(),
-          Some(Type::Nil) => self.stack.push_nil(),
-          Some(Type::Number) => self.stack.push_number(),
-          Some(Type::Raw) => todo!("Does this type even still exist?"),
-          Some(Type::Reference) => todo!("References don't exist yet!"),
-          None => self.stack.push_any(),
-        }
+          .i32x4_replace_lane(0)
+          .i32_const(0)
+          .i32x4_replace_lane(1);
       }};
     }
 
@@ -654,15 +627,27 @@ impl WasmCompiler {
           if let (_, Raw(id)) = bytecode_pairs[bc_index] {
             if let Some((index, _, typ)) = globals_map.get_mut(&id) {
               function.instructions().global_get(*index);
-              if typ.is_none() {
-                function
-                  .instructions()
-                  .i64x2_extract_lane(1)
-                  .global_get(*index)
-                  .i64x2_extract_lane(0)
-                  .i32_wrap_i64();
+              if let Some(inner_typ) = typ {
+                match inner_typ {
+                  Type::Nil => {
+                    function.instructions().drop();
+                    push_nil!();
+                  },
+                  Type::Boolean => {
+                    function.instructions().i32x4_extract_lane(2);
+                    self.stack.push_boolean();
+                  },
+                  Type::Number => {
+                    function.instructions().i64x2_extract_lane(1).f64_reinterpret_i64();
+                    self.stack.push_number();
+                  },
+                  _ => {
+                    todo!("Retrieval for this type is not yet implemented");
+                  },
+                }
+              } else {
+                self.stack.push_any();
               }
-              register_unknown!(typ);
             } else {
               runtime_error!(ErrorMsg::UndefinedVariable as i32);
             }
@@ -962,42 +947,26 @@ impl WasmCompiler {
             bc_index += 1;
 
             if let Some((index, _, typ)) = globals_map.get_mut(&id) {
-              match typ {
-                Some(Type::Reference) if self.stack.peek_nil(0) || self.stack.peek_reference(0) => {},
-                Some(Type::Nil) if self.stack.peek_reference(0) => {
-                  let _ = typ.replace(Type::Reference);
-                },
-                Some(Type::Nil) if self.stack.peek_nil(0) => {},
-                Some(Type::Number) if self.stack.peek_number(0) => {},
-                Some(Type::Boolean) if self.stack.peek_boolean(0) => {},
-                Some(Type::Raw) => {
-                  panic!("Impossible errant raw value");
-                },
-                None => {},
-                _ => {
-                  let _ = typ.take();
-                },
-              }
-
-              if typ.is_none() {
-                if self.stack.peek_any(0) {
-                  function
-                    .instructions()
-                    .global_set(*index)
-                    .i64x2_splat()
-                    .i32_const(0)
-                    .i32x4_replace_lane(3)
-                    .local_get(*index)
-                    .i64x2_replace_lane(0);
-                } else if self.stack.peek_boolean(0) {
-                  push_boolean_as_v128!();
-                } else if self.stack.peek_nil(0) {
-                  push_nil_as_v128!();
-                } else if self.stack.peek_number(0) {
-                  push_number_as_v128!();
-                } else {
-                  todo!("Unhandled result type when setting global");
-                }
+              if self.stack.peek_any(0) {
+                panic!("Can this even happen?");
+                //let _ = typ.take();
+                //function
+                //  .instructions()
+                //  .i32x4_splat()
+                //  .i32_const(0)
+                //  .i32x4_replace_lane(1)
+                //  .i64x2_replace_lane(1);
+              } else if self.stack.peek_boolean(0) {
+                push_boolean_as_v128!();
+                typ.replace(Type::Boolean);
+              } else if self.stack.peek_nil(0) {
+                push_nil_as_v128!();
+                typ.replace(Type::Nil);
+              } else if self.stack.peek_number(0) {
+                push_number_as_v128!();
+                typ.replace(Type::Number);
+              } else {
+                todo!("Unhandled result type when setting global");
               }
 
               function.instructions().global_set(*index);
