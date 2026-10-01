@@ -40,9 +40,13 @@ cd ..
 ./test.sh
 ```
 
-## WebAssembly
+## WebAssembly Conversion
 
 There is also a conversion of the project to run in WebAssembly.  Most code for that is in the `web` directory.  The `web-test.sh` script can carry out the whole process of enabling Wasm support, outputting the project as Wasm, and then running the tests and benchmarks in Wasm.
+
+## WebAssembly Backend
+
+There is also a work-in-progress WebAssembly backend for Lox.  Its code is located in `wasm-backend`.  It tries to treat the bytecode stream from the main compiler as a very sad IR and compile it to Wasm.  From `wasm-backend/`, you can run `cargo run --release path_to_my_program.lox` to generate a new `wasm-backend/test-server/program.wasm`.  `wasm-backend/test-server/run.sh` can be used to launch a simple HTTP server (via Python) for viewing the output of running the compiled Wasm.
 
 ## License
 
