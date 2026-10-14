@@ -50,6 +50,7 @@ EOF
 echo "=== Lox benchmark suite (roundtripped) ==="
 (
   for file in ./mothership/test/benchmark/*.lox; do
+    echo "Roundtripping: $file"
     [ -f "$file" ] || continue
     "$LOX" --roundtrip "$file"
   done
