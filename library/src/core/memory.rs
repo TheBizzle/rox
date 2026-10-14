@@ -31,6 +31,7 @@ pub unsafe fn grow_array<T, U: Into<usize>>(pointer: *mut T, old_count: U, new_c
     // Resize
     let old_layout = Layout::from_size_align(size_of::<T>() * old_count, align_of::<T>()).unwrap();
     let result = unsafe { alloc::realloc(pointer.cast::<u8>(), old_layout, new_size).cast::<T>() };
+    #[allow(clippy::redundant_else)]
     if result.is_null() {
       eprintln!("Reallocation failed");
       handle_alloc_error(old_layout);
