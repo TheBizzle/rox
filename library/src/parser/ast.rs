@@ -1,10 +1,12 @@
 use super::token::Token;
 
+#[derive(Debug)]
 pub struct Ast {
   pub statements: Vec<Statement>,
 }
 
 #[allow(clippy::enum_variant_names)]
+#[derive(Clone, Debug)]
 pub enum Statement {
   Block {
     contents: Vec<Self>,
@@ -59,6 +61,7 @@ pub enum Statement {
   },
 }
 
+#[derive(Clone, Debug)]
 pub struct Function {
   pub fn_decl: Variable,
   pub params: Vec<Variable>,
@@ -66,12 +69,14 @@ pub struct Function {
   pub token: Token,
 }
 
+#[derive(Clone, Debug)]
 pub struct Variable {
   pub name: String,
   pub token: Token,
 }
 
 #[allow(clippy::enum_variant_names, dead_code)]
+#[derive(Clone, Debug)]
 pub enum Literal {
   BooleanLit(bool),
   DoubleLit(f64),
@@ -80,6 +85,7 @@ pub enum Literal {
 }
 
 #[allow(clippy::enum_variant_names, dead_code)]
+#[derive(Clone, Debug)]
 pub enum Expr {
   Assign { var: Variable, value: Box<Self>, token: Token },
   Binary { left: Box<Self>, right: Box<Self>, token: Token },
