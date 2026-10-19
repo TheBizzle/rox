@@ -16,6 +16,7 @@ pub struct CompiledChunk {
   pub constants: Vec<CompiledValue>,
 }
 
+#[allow(clippy::enum_variant_names)]
 pub enum CompiledValue {
   CompiledBoolean(bool),
   CompiledNumber(f64),
