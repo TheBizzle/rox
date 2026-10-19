@@ -492,8 +492,17 @@ impl WasmCompiler {
 
           ReturnStatement { expr_opt, .. } => wrap_errs(compile_return(context, expr_opt.as_ref())),
 
-          WhileStatement { predicate: _, body: _, body_end_token: _, token: _ } => {
-            todo!("Not yet implemented")
+          WhileStatement { predicate, body, .. } => {
+            context.function.instructions().block(BlockType::Empty).loop_(BlockType::Empty);
+
+            wrap_errs(compile_expr(context, predicate))?;
+            context.function.instructions().i32_eqz().br_if(1);
+
+            compile_statement(context, body)?;
+
+            context.function.instructions().br(0).end().end();
+
+            Ok(())
           },
         }
       }
