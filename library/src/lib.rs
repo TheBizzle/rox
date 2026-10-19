@@ -1,8 +1,8 @@
-pub mod compiler;
 pub mod core;
+pub mod parser;
 pub mod vm;
 
-mod parser;
+mod compiler;
 mod runtime;
 
 #[cfg(target_arch = "wasm32")]

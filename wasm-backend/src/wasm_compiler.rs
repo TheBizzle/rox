@@ -8,17 +8,20 @@ use wasm_encoder::{
   MemoryType, Module, TypeSection, ValType,
 };
 
-use rox_lib::core::byte::Byte::{self, Named, Raw};
-use rox_lib::core::opcode::OpCode::{
-  Add, Class, CloseUpvalue, Closure, Constant, DefineGlobal, Divide, Equal, False, FnCall, GetGlobal,
-  GetLocal, GetProperty, GetSuper, GetUpvalue, Greater, Inherit, Invoke, Jump, JumpIfFalse, Less, Loop,
-  Method, Multiply, Negate, Nil, Not, Pop, Print, Return, SetGlobal, SetLocal, SetProperty, SetUpvalue,
-  Subtract, SuperInvoke, True,
+use rox_lib::parser::token::Token;
+use rox_lib::parser::token::TokenType::{
+  And, Bang, BangEqual, EqualEqual, Greater, GreaterEqual, Less, LessEqual, Minus, Or, Plus, Slash, Star,
 };
 
-use rox_lib::compiler::compilation::Compilation;
-use rox_lib::compiler::compilation::CompiledValue::{
-  self, CompiledBoolean, CompiledFunction, CompiledNil, CompiledNumber, CompiledString,
+use rox_lib::parser::ast::{
+  Ast,
+  Expr::{self, Assign, Binary, Call, Get, Grouping, LiteralExpr, Logical, Set, Super, This, Unary, VarRef},
+  Function as AstFunction,
+  Literal::{self, BooleanLit, DoubleLit, NilLit, StringLit},
+  Statement::{
+    self, Block, Class, DeclareVar, ExpressionStatement, ForStatement, FunctionStatement, IfElse,
+    PrintStatement, ReturnStatement, WhileStatement,
+  },
 };
 
 use super::shadow_stack::ShadowStack;
@@ -27,16 +30,120 @@ pub struct WasmCompiler {
   stack: ShadowStack,
 }
 
-#[derive(Debug)]
-enum InitialValue {
-  ConstReference(u8),
-  Nil,
+struct Context<'a> {
+  compiler: &'a mut WasmCompiler,
+  error_fn_index: u32,
+  function: Function,
+  globals_map: HashMap<String, (u32, ConstExpr, Type)>,
+  logical_type_index: u32,
+  print_number_fn_index: u32,
+  print_fn_index: u32,
+  print_int_fn_index: u32,
 }
+
+impl Context<'_> {
+  pub fn push_type(&mut self) {
+    let typ = if self.compiler.stack.peek_nil(0) {
+      Type::Nil
+    } else if self.compiler.stack.peek_boolean(0) {
+      Type::Boolean
+    } else if self.compiler.stack.peek_number(0) {
+      Type::Number
+    } else {
+      panic!("Unsupported stack item type");
+    };
+    self.function.instructions().i32_const(typ as i32);
+    self.compiler.stack.push_raw();
+  }
+
+  pub fn push_bool(&mut self, bool: bool) {
+    let value = if bool { Boolean::True } else { Boolean::False };
+    self.function.instructions().i32_const(value as i32);
+    self.compiler.stack.push_boolean();
+  }
+
+  pub fn push_nil(&mut self) {
+    self.function.instructions().i32_const(NIL);
+    self.compiler.stack.push_nil();
+  }
+
+  pub fn push_number(&mut self, num: f64) {
+    self.function.instructions().f64_const(Ieee64::new(num.to_bits()));
+    self.compiler.stack.push_number();
+  }
+
+  pub fn push_boolean_as_any(&mut self) {
+    self.function.instructions().i64_extend_i32_u().i32_const(Type::Boolean as i32);
+    self.compiler.stack.pop();
+    self.compiler.stack.push_any();
+  }
+
+  pub fn push_nil_as_any(&mut self) {
+    self.function.instructions().i64_extend_i32_u().i32_const(Type::Nil as i32);
+    self.compiler.stack.pop();
+    self.compiler.stack.push_any();
+  }
+
+  pub fn push_number_as_any(&mut self) {
+    self.function.instructions().i64_reinterpret_f64().i32_const(Type::Number as i32);
+    self.compiler.stack.pop();
+    self.compiler.stack.push_any();
+  }
+
+  pub fn push_boolean_as_v128(&mut self) {
+    self
+      .function
+      .instructions()
+      .i32x4_splat()
+      .i32_const(Type::Boolean as i32)
+      .i32x4_replace_lane(0)
+      .i32_const(0)
+      .i32x4_replace_lane(1)
+      .i32_const(0)
+      .i32x4_replace_lane(3);
+  }
+
+  pub fn push_nil_as_v128(&mut self) {
+    self
+      .function
+      .instructions()
+      .i32x4_splat()
+      .i32_const(Type::Nil as i32)
+      .i32x4_replace_lane(0)
+      .i32_const(0)
+      .i32x4_replace_lane(1)
+      .i32_const(0)
+      .i32x4_replace_lane(3);
+  }
+
+  pub fn push_number_as_v128(&mut self) {
+    self
+      .function
+      .instructions()
+      .i64_reinterpret_f64()
+      .i64x2_splat()
+      .i32_const(Type::Number as i32)
+      .i32x4_replace_lane(0)
+      .i32_const(0)
+      .i32x4_replace_lane(1);
+  }
+
+  pub fn runtime_error(&mut self, error: ErrorMsg, token: &Token) -> Result<(), Error> {
+    self.function
+      .instructions()
+      .i32_const(error.clone() as i32)
+      .i32_const(token.loc.line_num.cast_signed()) // TODO: Pass in the relevant token for this
+      .call(self.error_fn_index);
+    Err((error, token.clone()))
+  }
+}
+
+type Error = (ErrorMsg, Token);
 
 #[allow(dead_code)]
 enum WasmConst {
   I32(i32),
-  I64(i64),
+  I64(i64), // TODO: Use it?
   F64(Ieee64),
 }
 
@@ -76,19 +183,6 @@ enum Type {
   Raw,
 }
 
-impl Type {
-  pub const fn from_compiled(value: &CompiledValue) -> Self {
-    #[allow(clippy::match_same_arms)]
-    match value {
-      CompiledBoolean(..) => Self::Boolean,
-      CompiledFunction { .. } => Self::Reference,
-      CompiledNil => Self::Nil,
-      CompiledNumber(..) => Self::Number,
-      CompiledString(..) => Self::Reference,
-    }
-  }
-}
-
 const NIL: i32 = 0;
 
 #[derive(FromRepr, Eq, Ord, PartialEq, PartialOrd)]
@@ -98,7 +192,7 @@ enum Boolean {
   True,
 }
 
-#[derive(FromRepr, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, FromRepr, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 enum ErrorMsg {
   OperandMustBeNumber,
@@ -107,25 +201,13 @@ enum ErrorMsg {
   UndefinedVariable,
 }
 
-enum ControlFlow {
-  PartialIf,
-  IfElse { target: usize },
-  Or { target: usize },
-  And { target: usize },
-}
-use ControlFlow::{And, IfElse, Or, PartialIf};
-
 impl WasmCompiler {
   pub(super) const fn new() -> Self {
     Self { stack: ShadowStack::new() }
   }
 
   #[allow(clippy::too_many_lines)]
-  pub(super) fn run(&mut self, compilation: &Compilation) -> Vec<u8> {
-    let Compilation { strings: _strings, main: chunk } = compilation;
-    let bytecode_pairs: &Vec<(u32, Byte)> =
-      &chunk.line_data.iter().flat_map(|(i, xs)| xs.iter().map(|x| (*i, *x))).collect();
-
+  pub(super) fn run(&mut self, ast: &Ast) -> Vec<u8> {
     let mut module = Module::new();
 
     let mut memories = MemorySection::new();
@@ -180,73 +262,53 @@ impl WasmCompiler {
 
     module.section(&memories);
 
-    let mut globals = GlobalSection::new();
-    let global_ids: Vec<_> = chunk
-      .line_data
-      .values()
-      .flatten()
-      .collect::<Vec<_>>()
-      .windows(3)
-      .filter_map(|trio| {
-        if let [Raw(init), Named(DefineGlobal), Raw(id)] = trio {
-          Some((InitialValue::ConstReference(*init), id))
-        } else if let [Named(Nil), Named(DefineGlobal), Raw(id)] = trio {
-          Some((InitialValue::Nil, id))
-        } else if let [x, Named(DefineGlobal), Raw(_id)] = trio {
-          todo!("Unknown constant initializer: {x:?}");
+    let mut globals_queue: VecDeque<_> = ast
+      .statements
+      .iter()
+      .filter_map(|stmt| {
+        if let DeclareVar { new_var, initial, .. } = stmt {
+          Some((new_var, initial))
         } else {
           None
         }
       })
       .collect();
 
-    #[allow(clippy::match_same_arms)]
-    let constant_info: Vec<_> = chunk
-      .constants
-      .iter()
-      .map(|c| match c {
-        CompiledBoolean(boolean) => {
-          let value = if *boolean {
-            Boolean::True
-          } else {
-            Boolean::False
+    let mut globals_map: HashMap<String, (u32, ConstExpr, Type)> = HashMap::new();
+    let mut globals = GlobalSection::new();
+
+    while let Some((new_var, initial)) = globals_queue.pop_front() {
+      let (value, typ) = match initial {
+        LiteralExpr { literal, .. } => {
+          let (wasm_const, typ) = match literal {
+            NilLit => (WasmConst::I32(NIL), Type::Nil),
+            BooleanLit(false) => (WasmConst::I32(Boolean::False as i32), Type::Boolean),
+            BooleanLit(true) => (WasmConst::I32(Boolean::True as i32), Type::Boolean),
+            DoubleLit(x) => (WasmConst::F64(Ieee64::new(x.to_bits())), Type::Number),
+            StringLit(_) => (WasmConst::I32(Boolean::True as i32), Type::Reference),
           };
-          WasmConst::I32(value as i32)
+          (wasm_const.as_v128(), typ)
         },
-        CompiledFunction { .. } => todo!("Function constants are not yet supported"),
-        CompiledNil => WasmConst::I32(NIL),
-        CompiledNumber(x) => WasmConst::F64(Ieee64::new(x.to_bits())),
-        CompiledString(..) => WasmConst::I32(Boolean::True as i32),
-      })
-      .collect();
 
-    let mut globals_map: HashMap<u8, (u32, ConstExpr, Option<Type>)> = HashMap::new();
-
-    let mut globals_queue = VecDeque::from(global_ids);
-
-    while let Some((init, id)) = globals_queue.pop_front() {
-      let index = globals.len();
-      let (gexpr, ltype) = match init {
-        InitialValue::ConstReference(ref_id) if let Some((_, expr, lox_type)) = globals_map.get(&ref_id) => {
-          (expr.clone(), lox_type.clone())
+        VarRef { var, .. } if let Some((_, value, typ)) = globals_map.get(&var.name) => {
+          (value.clone(), typ.clone())
         },
-        InitialValue::ConstReference(ref_id)
-          if let Some(CompiledBoolean(_) | CompiledNil | CompiledNumber(..)) =
-            chunk.constants.get(ref_id as usize) =>
-        {
-          let value = &constant_info[ref_id as usize];
-          let lox_type = Some(Type::from_compiled(&chunk.constants[ref_id as usize]));
-          (value.as_v128(), lox_type)
-        },
-        InitialValue::ConstReference(_) => {
-          globals_queue.push_back((init, id));
+
+        VarRef { .. } => {
+          globals_queue.push_back((new_var, initial));
           break;
         },
-        InitialValue::Nil => (WasmConst::I32(NIL).as_v128(), Some(Type::Nil)),
+
+        x => {
+          panic!("Not-yet-supported initial value: {x:?}");
+        },
       };
+
+      let index = u32::try_from(globals_map.len()).unwrap();
+      globals_map.insert(new_var.name.clone(), (index, value.clone(), typ));
+
       let gtype = GlobalType { val_type: ValType::V128, mutable: true, shared: false };
-      globals.global(gtype, &gexpr);
-      globals_map.insert(*id, (index, gexpr, ltype));
+      globals.global(gtype, &value);
     }
 
     module.section(&globals);
@@ -287,8 +349,35 @@ impl WasmCompiler {
       .end();
     code.function(&print_fn);
 
-    let fn_constant_defs: Vec<_> =
-      constant_info.iter().map(WasmConst::val_type).map(|typ| (1, typ)).collect();
+    // TODO: This section duplicates the world of the globals-initializer above
+    #[allow(clippy::collection_is_never_read)]
+    let mut local_indices = HashMap::new();
+    let mut locals_counter = 0;
+
+    let constant_info: Vec<_> = ast
+      .statements
+      .iter()
+      .filter_map(|stmt| {
+        if let DeclareVar { new_var, initial: LiteralExpr { literal, .. }, .. } = stmt {
+          let wasm_const = match literal {
+            NilLit => WasmConst::I32(NIL),
+            BooleanLit(false) => WasmConst::I32(Boolean::False as i32),
+            BooleanLit(true) => WasmConst::I32(Boolean::True as i32),
+            DoubleLit(x) => WasmConst::F64(Ieee64::new(x.to_bits())),
+            StringLit(_str) => WasmConst::I32(Boolean::True as i32),
+          };
+
+          local_indices.insert(new_var.name.clone(), locals_counter);
+          locals_counter += 1;
+
+          Some(wasm_const)
+        } else {
+          None
+        }
+      })
+      .collect();
+
+    let fn_constant_defs: Vec<_> = constant_info.iter().map(WasmConst::val_type).map(|t| (1, t)).collect();
     let mut function = Function::new(fn_constant_defs);
 
     for (i, constant) in constant_info.iter().enumerate() {
@@ -297,657 +386,128 @@ impl WasmCompiler {
       instrs.local_set(u32::try_from(i).unwrap());
     }
 
-    macro_rules! push_type {
-      () => {{
-        let typ = if self.stack.peek_nil(0) {
-          Type::Nil
-        } else if self.stack.peek_boolean(0) {
-          Type::Boolean
-        } else if self.stack.peek_number(0) {
-          Type::Number
-        } else {
-          panic!("Unsupported stack item type");
-        };
-        function.instructions().i32_const(typ as i32);
-        self.stack.push_raw();
-      }};
-    }
+    let mut context = Context {
+      compiler: self,
+      error_fn_index,
+      function,
+      globals_map,
+      logical_type_index,
+      print_number_fn_index,
+      print_fn_index,
+      print_int_fn_index,
+    };
 
-    macro_rules! push_bool {
-      ($boolean: ident) => {{
-        function.instructions().i32_const(Boolean::$boolean as i32);
-        self.stack.push_boolean();
-      }};
-    }
+    println!("===   DEBUG AST   ===");
+    println!("{ast:#?}");
+    println!("=== END DEBUG AST ===");
 
-    macro_rules! push_nil {
-      () => {{
-        function.instructions().i32_const(NIL);
-        self.stack.push_nil();
-      }};
-    }
-
-    macro_rules! push_boolean_as_any {
-      () => {{
-        function.instructions().i64_extend_i32_u().i32_const(Type::Boolean as i32);
-        self.stack.pop();
-        self.stack.push_any();
-      }};
-    }
-
-    macro_rules! push_nil_as_any {
-      () => {{
-        function.instructions().i64_extend_i32_u().i32_const(Type::Nil as i32);
-        self.stack.pop();
-        self.stack.push_any();
-      }};
-    }
-
-    macro_rules! push_number_as_any {
-      () => {{
-        function.instructions().i64_reinterpret_f64().i32_const(Type::Number as i32);
-        self.stack.pop();
-        self.stack.push_any();
-      }};
-    }
-
-    macro_rules! push_boolean_as_v128 {
-      () => {{
-        function
-          .instructions()
-          .i32x4_splat()
-          .i32_const(Type::Boolean as i32)
-          .i32x4_replace_lane(0)
-          .i32_const(0)
-          .i32x4_replace_lane(1)
-          .i32_const(0)
-          .i32x4_replace_lane(3);
-      }};
-    }
-
-    macro_rules! push_nil_as_v128 {
-      () => {{
-        function
-          .instructions()
-          .i32x4_splat()
-          .i32_const(Type::Nil as i32)
-          .i32x4_replace_lane(0)
-          .i32_const(0)
-          .i32x4_replace_lane(1)
-          .i32_const(0)
-          .i32x4_replace_lane(3);
-      }};
-    }
-
-    macro_rules! push_number_as_v128 {
-      () => {{
-        function
-          .instructions()
-          .i64_reinterpret_f64()
-          .i64x2_splat()
-          .i32_const(Type::Number as i32)
-          .i32x4_replace_lane(0)
-          .i32_const(0)
-          .i32x4_replace_lane(1);
-      }};
-    }
-
-    println!("===   DEBUG BYTECODE   ===");
-    for (i, code) in bytecode_pairs {
-      print!("{i:>3} ");
-      match code {
-        Raw(num) => println!("{num}"),
-        Named(x) => println!("{x}"),
-      }
-    }
-    println!("=== END DEBUG BYTECODE ===");
-
-    let mut cfs = Vec::new();
-    let mut bc_index = 0;
-    let mut this_is_fine = true;
-
-    while this_is_fine && bc_index < bytecode_pairs.len() {
-      match cfs.last() {
-        Some(IfElse { target }) if &bc_index == target => {
-          function.instructions().end();
-          cfs.pop();
-        },
-        Some(Or { target }) if &bc_index == target => {
-          let was_bool = self.stack.peek_boolean(0);
-
-          if self.stack.peek_any(0) {
-            // Already encoded
-          } else if self.stack.peek_boolean(0) {
-            push_boolean_as_any!();
-          } else if self.stack.peek_nil(0) {
-            push_nil_as_any!();
-          } else if self.stack.peek_number(0) {
-            push_number_as_any!();
-          } else {
-            todo!("Unhandled result type in `or`");
-          }
-
-          function.instructions().end();
-
-          if was_bool {
-            function.instructions().drop().i32_wrap_i64();
-            self.stack.pop();
-            self.stack.push_boolean();
-          }
-
-          cfs.pop();
-        },
-        Some(And { target }) if &bc_index == target => {
-          let was_bool = self.stack.peek_boolean(0);
-
-          if self.stack.peek_any(0) {
-            // Already encoded
-          } else if self.stack.peek_boolean(0) {
-            push_boolean_as_any!();
-          } else if self.stack.peek_nil(0) {
-            push_nil_as_any!();
-          } else if self.stack.peek_number(0) {
-            push_number_as_any!();
-          } else {
-            todo!("Unhandled result type in `and`");
-          }
-
-          function
-            .instructions()
-            .else_()
-            .i64_const(Boolean::False as i64)
-            .i32_const(Type::Boolean as i32)
-            .end();
-
-          if was_bool {
-            function.instructions().drop().i32_wrap_i64();
-            self.stack.pop();
-            self.stack.push_boolean();
-          }
-
-          cfs.pop();
-        },
-        _ => {},
-      }
-
-      let (line_num, code) = bytecode_pairs[bc_index];
-
-      macro_rules! runtime_error {
-        ($error_num: expr) => {{
-          function
-            .instructions()
-            .i32_const($error_num)
-            .i32_const(line_num.cast_signed())
-            .call(error_fn_index);
-          this_is_fine = false;
-        }};
-      }
-
-      match code {
-        Raw(num) => {
-          function.instructions().i32_const(i32::from(num));
-          self.stack.push_number();
-        },
-        Named(Add) => {
-          if self.stack.peek_number(0) && self.stack.peek_number(1) {
-            function.instructions().f64_add();
-            self.stack.pop();
-          } else if self.stack.peek_string(0) && self.stack.peek_string(1) {
-            todo!("String concatenation is not yet implemented");
-            //   #[allow(irrefutable_let_patterns)]
-            //   (Reference(GcPtr(x)), Reference(GcPtr(y)))
-            //     if let GcObject { object: HeapString(str1), .. } = unsafe { &*x }
-            //       && let GcObject { object: HeapString(str2), .. } = unsafe { &*y } =>
-            //   {
-            //     let _ = self.pop();
-            //     let _ = self.pop();
-            //     push_and_win!(Reference(GcPtr(self.compiler.heap.concatenate_strings(*str1, *str2).1)))
-            //   },
-          } else {
-            runtime_error!(ErrorMsg::OperandsMustBeNumsOrStrs as i32);
-          }
-        },
-
-        Named(Class) => {
-          todo!("Not yet implemented: CLASS");
-          // let (_, name_gc_ptr) = read_string!();
-          // let x = self.compiler.heap.allocate_class(ClassObj::new(name_gc_ptr));
-          // push_and_win!(Reference(GcPtr(x)))
-        },
-
-        Named(CloseUpvalue) => {
-          todo!("Not yet implemented: CLOSEUPVALUE");
-          // self.compiler.heap.close_upvalues(unsafe { self.stack_top.sub(1) });
-          // self.pop();
-          // Continue
-        },
-
-        Named(Closure) => {
-          todo!("Not yet implemented: CLOSURE");
-          // let constant = read_constant!();
-          // if let Reference(GcPtr(fn_gc_ptr)) = constant
-          //   && let GcObject { object, .. } = unsafe { &*fn_gc_ptr }
-          //   && let HeapFunction(_) = object
-          // {
-          //   let (closure_ptr, closure_gc_ptr) = self.compiler.heap.allocate_closure(fn_gc_ptr);
-          //   let result = push_and_win!(Reference(GcPtr(closure_gc_ptr)));
-
-          //   let closure = unsafe { &*closure_ptr };
-
-          //   let slots_ptr = frame!().slots_ptr;
-
-          //   for i in 0..(closure.upvalue_count as usize) {
-          //     let is_local = read_u8!();
-          //     let index = read_u8!() as usize;
-
-          //     if is_local == 1 {
-          //       unsafe {
-          //         let value_ptr = slots_ptr.add(index);
-          //         *closure.upvalues_ptr_ptr.add(i) = self.capture_upvalue(value_ptr);
-          //       }
-          //     } else {
-          //       let owning_closure = frame!().closure();
-          //       unsafe { *closure.upvalues_ptr_ptr.add(i) = *owning_closure.upvalues_ptr_ptr.add(index) };
-          //     }
-          //   }
-
-          //   result
-          // } else {
-          //   runtime_error!("Tried to read a function and got this: {constant:?}")
-          // }
-        },
-
-        Named(Constant) => {
-          bc_index += 1;
-          let (_, Raw(const_index)) = bytecode_pairs[bc_index] else {
-            panic!("`Constant`'s operand must be a raw number");
-          };
-
-          // TODO: Have to actually check what kind of constant it is; functions will be handled
-          // differently.
-          function.instructions().local_get(u32::from(const_index));
-          self.stack.push_number();
-        },
-
-        Named(DefineGlobal) => {
-          function.instructions().drop();
-          if self.stack.peek_any(0) {
-            function.instructions().drop();
-          }
-          self.stack.pop();
-          bc_index += 1;
-        },
-
-        Named(Divide) => {
-          if self.stack.peek_number(0) && self.stack.peek_number(1) {
-            function.instructions().f64_div();
-            self.stack.pop();
-          } else {
-            runtime_error!(ErrorMsg::OperandsMustBeNumbers as i32);
-          }
-        },
-
-        Named(Equal) => {
-          if self.stack.peek_boolean(0) && self.stack.peek_boolean(1) {
-            self.stack.pop();
-            function.instructions().i32_eq();
-          } else if self.stack.peek_number(0) && self.stack.peek_number(1) {
-            self.stack.pop();
-            self.stack.pop();
-            function.instructions().f64_sub().f64_abs().f64_const(Ieee64::new((1e-9_f64).to_bits())).f64_lt();
-            self.stack.push_boolean();
-          } else if self.stack.peek_reference(0) && self.stack.peek_reference(1) {
-            todo!("Missing implementation");
-            // let (a, b) = unsafe { (&*x, &*y) };
-            // objs_are_equal(&a.object, &b.object)
-          } else if self.stack.peek_nil(0) && self.stack.peek_nil(1) {
-            self.stack.pop();
-            self.stack.pop();
-            push_bool!(True);
-          } else {
-            self.stack.pop();
-            self.stack.pop();
-            push_bool!(False);
-          }
-        },
-
-        Named(False) => {
-          push_bool!(False);
-        },
-
-        Named(FnCall) => {
-          todo!("Not yet implemented: FNCALL");
-          // let arg_count = read_u8!();
-          // let value = self.peek(arg_count as usize);
-          // self.call_value_for_error(&value, arg_count).unwrap_or(Continue)
-        },
-
-        Named(GetGlobal) => {
-          bc_index += 1;
-          if let (_, Raw(id)) = bytecode_pairs[bc_index] {
-            if let Some((index, _, typ)) = globals_map.get_mut(&id) {
-              function.instructions().global_get(*index);
-              if let Some(inner_typ) = typ {
-                match inner_typ {
-                  Type::Nil => {
-                    function.instructions().drop();
-                    push_nil!();
-                  },
-                  Type::Boolean => {
-                    function.instructions().i32x4_extract_lane(2);
-                    self.stack.push_boolean();
-                  },
-                  Type::Number => {
-                    function.instructions().i64x2_extract_lane(1).f64_reinterpret_i64();
-                    self.stack.push_number();
-                  },
-                  _ => {
-                    todo!("Retrieval for this type is not yet implemented");
-                  },
-                }
-              } else {
-                self.stack.push_any();
-              }
-            } else {
-              runtime_error!(ErrorMsg::UndefinedVariable as i32);
-            }
-          } else {
-            panic!("Impossible global retrieval that isn't followed by ID");
-          }
-        },
-
-        Named(GetLocal) => {
-          todo!("Not yet implemented: GETLOCAL");
-          // let slot_num = read_u8!();
-          // let slots_ptr = frame!().slots_ptr;
-          // let value = unsafe { &*slots_ptr.add(slot_num as usize) }.clone();
-          // push_and_win!(value)
-        },
-
-        Named(GetProperty) => {
-          todo!("Not yet implemented: GETPROPERTY");
-          // if let Reference(GcPtr(instance_gc_ptr)) = self.peek(0)
-          //   && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
-          // {
-          //   let instance_obj = unsafe { &*instance_obj_ptr };
-
-          //   let (name, _) = read_string!();
-
-          //   if let Some(property_value) = instance_obj.fields.get(name) {
-          //     self.pop();
-          //     push_and_win!(unsafe { &*property_value }.clone())
-          //   } else if let Some(value_gc_ptr) = self.bind_method(instance_obj.class(), name) {
-          //     push_and_win!(Reference(GcPtr(value_gc_ptr)))
-          //   } else {
-          //     runtime_error!("Undefined property '{name}'.")
-          //   }
-          // } else {
-          //   runtime_error!("Only instances have properties.")
-          // }
-        },
-
-        Named(GetSuper) => {
-          todo!("Not yet implemented: GETSUPER");
-          // let (name_str, _) = read_string!();
-
-          // if let Reference(GcPtr(superclass_gc_ptr)) = self.pop()
-          //   && let HeapClass(superclass_obj_ptr) = unsafe { &*superclass_gc_ptr }.object
-          // {
-          //   let superclass_obj = unsafe { &*superclass_obj_ptr };
-
-          //   if let Some(value_gc_ptr) = self.bind_method(superclass_obj, name_str) {
-          //     push_and_win!(Reference(GcPtr(value_gc_ptr)))
-          //   } else {
-          //     runtime_error!("Undefined property '{name_str}'.")
-          //   }
-          // } else {
-          //   runtime_error!("Only instances can use `super`.")
-          // }
-        },
-
-        Named(GetUpvalue) => {
-          todo!("Not yet implemented: GETUPVALUE");
-          // let slot = read_u8!() as usize;
-          // let closure = frame_mut!().closure();
-          // let HeapUpvalue(upvalue_ptr) = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.object else {
-          //   panic!("Impossible for heap upvalue to be non-upvalue");
-          // };
-          // let value_ptr = unsafe { &*upvalue_ptr }.value_ptr;
-          // let value = unsafe { &*value_ptr }.clone();
-          // push_and_win!(value)
-        },
-
-        Named(Greater) => {
-          if self.stack.peek_number(0) && self.stack.peek_number(1) {
-            function.instructions().f64_gt();
-            self.stack.pop();
-            self.stack.pop();
-            self.stack.push_boolean();
-          } else {
-            runtime_error!(ErrorMsg::OperandsMustBeNumbers as i32);
-          }
-        },
-
-        Named(Inherit) => {
-          todo!("Not yet implemented: INHERIT");
-          // if let Reference(GcPtr(super_gc_ptr)) = self.peek(1)
-          //   && let HeapClass(super_class_obj_ptr) = unsafe { &*super_gc_ptr }.object
-          //   && let superclass = unsafe { &mut *super_class_obj_ptr }
-          // {
-          //   if let Reference(GcPtr(sub_gc_ptr)) = self.peek(0)
-          //     && let HeapClass(sub_class_obj_ptr) = unsafe { &*sub_gc_ptr }.object
-          //     && let subclass = unsafe { &mut *sub_class_obj_ptr }
-          //   {
-          //     superclass.methods.copy_into(&mut subclass.methods);
-          //     self.pop();
-          //     Continue
-          //   } else {
-          //     runtime_error!("Subclass must be a class.")
-          //   }
-          // } else {
-          //   runtime_error!("Superclass must be a class.")
-          // }
-        },
-
-        Named(Invoke) => {
-          todo!("Not yet implemented: INVOKE");
-          // let (name_ptr, _) = read_string!();
-          // let arg_count = read_u8!();
-          // self.invoke(name_ptr, arg_count).unwrap_or(Continue)
-        },
-
-        Named(Jump) => {
-          if matches!(cfs.last(), Some(PartialIf))
-            && let Some((_, Raw(upper_bits))) = bytecode_pairs.get(bc_index + 1)
-            && let Some((_, Raw(lower_bits))) = bytecode_pairs.get(bc_index + 2)
-            && let Some((_, Named(Pop))) = bytecode_pairs.get(bc_index + 3)
-          {
-            let jump_distance = u16::from_be_bytes([*upper_bits, *lower_bits]);
-
-            bc_index += 3;
-
-            let len = cfs.len();
-            cfs[len - 1] = IfElse { target: bc_index + (jump_distance as usize) };
-
-            function.instructions().else_();
-          } else {
-            panic!("Unrecognized `else`-like control flow statement");
-          }
-        },
-
-        Named(JumpIfFalse) => {
-          if let Some((_, Raw(upper_bits))) = bytecode_pairs.get(bc_index + 1)
-            && let Some((_, Raw(lower_bits))) = bytecode_pairs.get(bc_index + 2)
-            && let Some((_, Named(Pop))) = bytecode_pairs.get(bc_index + 3)
-          {
-            bc_index += 3;
-            let jump_distance = u16::from_be_bytes([*upper_bits, *lower_bits]);
-            if let Some((_, Named(Jump))) = bytecode_pairs.get(bc_index - 3 + jump_distance as usize) {
-              cfs.push(PartialIf);
-
-              if self.stack.peek_nil(0) {
-                function.instructions().drop();
-                self.stack.pop();
-                push_bool!(False);
-              } else if self.stack.peek_boolean(0) {
-                function.instructions().i32_eqz().i32_eqz();
-              } else if self.stack.peek_any(0) {
-                todo!("Any go boom!");
-              } else {
-                function.instructions().drop();
-                self.stack.pop();
-                push_bool!(True);
-              }
-
-              function.instructions().if_(BlockType::Empty);
-            } else {
-              // `and`
-              if self.stack.peek_nil(0) {
-                bc_index += usize::from(jump_distance - 1);
-              } else if self.stack.peek_boolean(0) {
-                cfs.push(And { target: bc_index + usize::from(jump_distance) });
-                function.instructions().if_(BlockType::FunctionType(logical_type_index));
-              } else if self.stack.peek_number(0) {
-                function.instructions().drop();
-                self.stack.pop();
-              } else if self.stack.peek_any(0) {
-                todo!("Any go boom!");
-              } else {
-                todo!("Dunno what this is");
+    {
+      fn compile_statement(context: &mut Context, stmt: &Statement) -> Result<(), Vec<Error>> {
+        match stmt {
+          Block { contents, .. } => {
+            // TODO: Push scope and establish new namespace
+            let mut errors = Vec::new();
+            for s in contents {
+              if let Err(msgs) = compile_statement(context, s) {
+                errors.extend(msgs);
               }
             }
-          } else if let Some((_, Raw(_))) = bytecode_pairs.get(bc_index + 1)
-            && let Some((_, Raw(_))) = bytecode_pairs.get(bc_index + 2)
-            && let Some((_, Named(Jump))) = bytecode_pairs.get(bc_index + 3)
-            && let Some((_, Raw(upper_bits))) = bytecode_pairs.get(bc_index + 4)
-            && let Some((_, Raw(lower_bits))) = bytecode_pairs.get(bc_index + 5)
-            && let Some((_, Named(Pop))) = bytecode_pairs.get(bc_index + 6)
-          {
-            bc_index += 6;
-            if self.stack.peek_nil(0) {
-              function.instructions().drop();
-              self.stack.pop();
-            } else if self.stack.peek_boolean(0) {
-              let jump_distance = u16::from_be_bytes([*upper_bits, *lower_bits]);
-              cfs.push(Or { target: bc_index + usize::from(jump_distance) });
-              function
-                .instructions()
-                .if_(BlockType::FunctionType(logical_type_index))
-                .i64_const(Boolean::True as i64)
-                .i32_const(Type::Boolean as i32)
-                .else_();
-            } else if self.stack.peek_number(0) {
-              let jump_distance = u16::from_be_bytes([*upper_bits, *lower_bits]);
-              bc_index += usize::from(jump_distance - 1);
-            } else if self.stack.peek_any(0) {
-              todo!("Any go boom!");
+
+            if errors.is_empty() {
+              Ok(())
             } else {
-              todo!("Dunno what this is");
+              Err(errors)
             }
-          } else {
-            panic!("Unrecognized `if`-like control flow statement");
-          }
-        },
+          },
 
-        Named(Less) => {
-          if self.stack.peek_number(0) && self.stack.peek_number(1) {
-            function.instructions().f64_lt();
-            self.stack.pop();
-            self.stack.pop();
-            self.stack.push_boolean();
-          } else {
-            runtime_error!(ErrorMsg::OperandsMustBeNumbers as i32);
-          }
-        },
+          Class { class_var: _, super_name_var_opt: _, methods: _, token: _ } => todo!("Not yet implemented"),
 
-        Named(Loop) => {
-          todo!("Not yet implemented: LOOP");
-          //let offset = read_u16!() as usize;
-          //let current = frame_mut!();
-          //current.inst_ptr = unsafe { current.inst_ptr.sub(offset) };
-          //Continue
-        },
+          DeclareVar { new_var: _nv, initial: _i, token: _t } => {
+            // TODO: We can just skip this for now, since we just inline all of these up-front
+            Ok(())
+          },
 
-        Named(Method) => {
-          todo!("Not yet implemented: METHODCODE");
-          //let (_, method_name_gc_ptr) = read_string!();
-          //self.define_method(method_name_gc_ptr);
-          //Continue
-        },
+          ExpressionStatement { expr, .. } => wrap_errs(compile_expr(context, expr)),
 
-        Named(Multiply) => {
-          if self.stack.peek_number(0) && self.stack.peek_number(1) {
-            function.instructions().f64_mul();
-            self.stack.pop();
-          } else {
-            runtime_error!(ErrorMsg::OperandsMustBeNumbers as i32);
-          }
-        },
+          ForStatement {
+            initializer_opt: _,
+            cond_opt: _,
+            incrementer_opt: _,
+            body: _,
+            body_end_token: _,
+            token: _,
+          } => {
+            todo!("Not yet implemented")
+          },
 
-        Named(Negate) => {
-          if self.stack.peek_number(0) {
-            function.instructions().f64_neg();
-          } else {
-            runtime_error!(ErrorMsg::OperandMustBeNumber as i32);
-          }
-        },
+          FunctionStatement { func: _, token: _ } => todo!("Not yet implemented"),
 
-        Named(Nil) => {
-          push_nil!();
-        },
+          IfElse { antecedent, consequent, alternative_opt, .. } => {
+            wrap_errs(compile_expr(context, antecedent))?;
 
-        Named(Not) => {
-          if self.stack.peek_nil(0) {
-            function.instructions().drop();
-            self.stack.pop();
-            push_bool!(True);
-          } else if self.stack.peek_boolean(0) {
-            function.instructions().i32_eqz();
-          } else if self.stack.peek_any(0) {
-            todo!("Any go boom!");
-          } else {
-            function.instructions().drop();
-            self.stack.pop();
-            push_bool!(False);
-          }
-        },
+            if context.compiler.stack.peek_nil(0) {
+              context.function.instructions().drop();
+              context.compiler.stack.pop();
+              context.push_bool(false);
+            } else if context.compiler.stack.peek_boolean(0) {
+              context.function.instructions().i32_eqz().i32_eqz();
+            } else if context.compiler.stack.peek_any(0) {
+              todo!("`Any` go boom!");
+            } else {
+              context.function.instructions().drop();
+              context.compiler.stack.pop();
+              context.push_bool(true);
+            }
 
-        Named(Pop) => {
-          todo!("Not yet implemented: POP");
-          //let _ = self.pop();
-          //Continue
-        },
+            context.function.instructions().if_(BlockType::Empty);
+            compile_statement(context, consequent)?;
 
-        Named(Print) => {
-          if self.stack.peek_number(0) {
-            function.instructions().call(print_number_fn_index);
-          } else if self.stack.peek_any(0) {
-            function.instructions().call(print_fn_index);
-          } else {
-            push_type!();
-            self.stack.pop();
-            function.instructions().call(print_int_fn_index);
-          }
-          self.stack.pop();
-        },
+            if let Some(alt) = alternative_opt {
+              context.function.instructions().else_();
+              compile_statement(context, alt)?;
+            }
 
-        Named(Return) => {
-          if self.stack.is_empty() {
-            push_nil!();
-          }
-          push_type!();
-          function.instructions().return_();
-          self.stack.pop();
-          self.stack.pop();
-        },
+            context.function.instructions().end();
 
-        Named(SetGlobal) => {
-          bc_index += 1;
-          if let (_, Raw(id)) = bytecode_pairs[bc_index] {
-            bc_index += 1;
+            Ok(())
+          },
 
-            if let Some((index, _, typ)) = globals_map.get_mut(&id) {
-              if self.stack.peek_any(0) {
+          PrintStatement { expr, .. } => {
+            wrap_errs(compile_expr(context, expr))?;
+
+            if context.compiler.stack.peek_number(0) {
+              context.function.instructions().call(context.print_number_fn_index);
+            } else if context.compiler.stack.peek_any(0) {
+              context.function.instructions().call(context.print_fn_index);
+            } else {
+              context.push_type();
+              context.compiler.stack.pop();
+              context.function.instructions().call(context.print_int_fn_index);
+            }
+
+            context.compiler.stack.pop();
+
+            Ok(())
+          },
+
+          ReturnStatement { expr_opt, .. } => wrap_errs(compile_return(context, expr_opt.as_ref())),
+
+          WhileStatement { predicate: _, body: _, body_end_token: _, token: _ } => {
+            todo!("Not yet implemented")
+          },
+        }
+      }
+
+      fn compile_expr(context: &mut Context, expr: &Expr) -> Result<(), Error> {
+        match expr {
+          Assign { var, value, token } => {
+            compile_expr(context, value)?;
+
+            let name = var.name.clone();
+
+            // This is only for globals
+            if let Some((index, value, _typ)) = context.globals_map.remove(&var.name) {
+              if context.compiler.stack.peek_any(0) {
                 panic!("Can this even happen?");
                 //let _ = typ.take();
                 //function
@@ -956,111 +516,681 @@ impl WasmCompiler {
                 //  .i32_const(0)
                 //  .i32x4_replace_lane(1)
                 //  .i64x2_replace_lane(1);
-              } else if self.stack.peek_boolean(0) {
-                push_boolean_as_v128!();
-                typ.replace(Type::Boolean);
-              } else if self.stack.peek_nil(0) {
-                push_nil_as_v128!();
-                typ.replace(Type::Nil);
-              } else if self.stack.peek_number(0) {
-                push_number_as_v128!();
-                typ.replace(Type::Number);
+              } else if context.compiler.stack.peek_boolean(0) {
+                context.push_boolean_as_v128();
+                context.globals_map.insert(name, (index, value, Type::Boolean));
+              } else if context.compiler.stack.peek_nil(0) {
+                context.push_nil_as_v128();
+                context.globals_map.insert(name, (index, value, Type::Nil));
+              } else if context.compiler.stack.peek_number(0) {
+                context.push_number_as_v128();
+                context.globals_map.insert(name, (index, value, Type::Number));
               } else {
                 todo!("Unhandled result type when setting global");
               }
 
-              function.instructions().global_set(*index);
-              self.stack.pop();
+              context.function.instructions().global_set(index);
+              context.compiler.stack.pop();
+
+              Ok(())
             } else {
-              runtime_error!(ErrorMsg::UndefinedVariable as i32);
+              context.runtime_error(ErrorMsg::UndefinedVariable, token)
             }
-          } else {
-            panic!("Impossible global retrieval that isn't followed by ID");
-          }
-        },
+          },
 
-        Named(SetLocal) => {
-          todo!("Not yet implemented: SETLOCAL");
-          //let slot_num = read_u8!();
-          //let slots_ptr = frame!().slots_ptr;
-          //let value = self.peek(0);
-          //unsafe { *slots_ptr.add(slot_num as usize) = value };
-          //Continue
-        },
+          Binary { left, right, token: Token { typ: BangEqual, loc } } => {
+            let fake_eq = Binary {
+              left: left.clone(),
+              right: right.clone(),
+              token: Token { typ: EqualEqual, loc: loc.clone() },
+            };
 
-        Named(SetProperty) => {
-          todo!("Not yet implemented: SETPROPERTY");
-          //if let Reference(GcPtr(instance_gc_ptr)) = self.peek(1)
-          //  && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
-          //{
-          //  let instance_obj = unsafe { &mut *instance_obj_ptr };
-          //  let (_, f_name_gc_ptr) = read_string!();
-          //  instance_obj.fields.set(f_name_gc_ptr, self.peek(0));
+            let res = compile_expr(context, &fake_eq);
+            context.function.instructions().i32_eqz();
 
-          //  let value = self.pop();
-          //  let _ = self.pop();
-          //  push_and_win!(value)
-          //} else {
-          //  runtime_error!("Only instances have fields.")
-          //}
-        },
+            res
+          },
 
-        Named(SetUpvalue) => {
-          todo!("Not yet implemented: SETUPVALUE");
-          //let slot = read_u8!() as usize;
-          //let closure = frame_mut!().closure();
-          //let HeapUpvalue(upvalue_ptr) = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.object else {
-          //  panic!("Impossible for heap upvalue to be non-upvalue");
-          //};
-          //let value_ptr = unsafe { &*upvalue_ptr }.value_ptr;
-          //let new_value = self.peek(0);
-          //unsafe { *value_ptr = new_value };
-          //Continue
-        },
+          Binary { left, right, token: Token { typ: EqualEqual, .. } } => {
+            compile_expr(context, left)?;
+            compile_expr(context, right)?;
 
-        Named(Subtract) => {
-          if self.stack.peek_number(0) && self.stack.peek_number(1) {
-            function.instructions().f64_sub();
-            self.stack.pop();
-          } else {
-            runtime_error!(ErrorMsg::OperandsMustBeNumbers as i32);
-          }
-        },
+            if context.compiler.stack.peek_boolean(0) && context.compiler.stack.peek_boolean(1) {
+              context.compiler.stack.pop();
+              context.function.instructions().i32_eq();
+            } else if context.compiler.stack.peek_number(0) && context.compiler.stack.peek_number(1) {
+              context.compiler.stack.pop();
+              context.compiler.stack.pop();
+              context
+                .function
+                .instructions()
+                .f64_sub()
+                .f64_abs()
+                .f64_const(Ieee64::new((1e-9_f64).to_bits()))
+                .f64_lt();
+              context.compiler.stack.push_boolean();
+            } else if context.compiler.stack.peek_reference(0) && context.compiler.stack.peek_reference(1) {
+              todo!("Missing implementation");
+              // let (a, b) = unsafe { (&*x, &*y) };
+              // objs_are_equal(&a.object, &b.object)
+            } else if context.compiler.stack.peek_nil(0) && context.compiler.stack.peek_nil(1) {
+              context.compiler.stack.pop();
+              context.compiler.stack.pop();
+              context.push_bool(true);
+            } else {
+              context.compiler.stack.pop();
+              context.compiler.stack.pop();
+              context.push_bool(false);
+            }
 
-        Named(SuperInvoke) => {
-          todo!("Not yet implemented: SUPERINVOKE");
-          // let (name, _) = read_string!();
-          // let arg_count = read_u8!();
-          // let Reference(GcPtr(gc_ptr)) = self.pop() else {
-          //   panic!("Super-invokee value must be a reference");
-          // };
-          // let HeapClass(class_obj_ptr) = unsafe { &*gc_ptr }.object else {
-          //   panic!("Super-invokee value must be a class");
-          // };
-          // let class = unsafe { &*class_obj_ptr };
-          // self.invoke_from_class(class, name, arg_count).unwrap_or(Continue)
-        },
+            Ok(())
+          },
 
-        Named(True) => {
-          push_bool!(True);
-        },
+          Binary { left, right, token: token @ Token { typ: Greater, .. } } => {
+            compile_expr(context, left)?;
+            compile_expr(context, right)?;
+
+            if context.compiler.stack.peek_number(0) && context.compiler.stack.peek_number(1) {
+              context.function.instructions().f64_gt();
+              context.compiler.stack.pop();
+              context.compiler.stack.pop();
+              context.compiler.stack.push_boolean();
+              Ok(())
+            } else {
+              context.runtime_error(ErrorMsg::OperandsMustBeNumbers, token)
+            }
+          },
+
+          Binary { left, right, token: Token { typ: GreaterEqual, loc } } => {
+            let fake_greater = Binary {
+              left: left.clone(),
+              right: right.clone(),
+              token: Token { typ: Greater, loc: loc.clone() },
+            };
+
+            let fake_equal = Binary {
+              left: left.clone(),
+              right: right.clone(),
+              token: Token { typ: EqualEqual, loc: loc.clone() },
+            };
+
+            let fake_or = Logical {
+              left: Box::new(fake_greater),
+              right: Box::new(fake_equal),
+              token: Token { typ: Or, loc: loc.clone() },
+            };
+
+            compile_expr(context, &fake_or)
+          },
+
+          Binary { left, right, token: token @ Token { typ: Less, .. } } => {
+            compile_expr(context, left)?;
+            compile_expr(context, right)?;
+
+            if context.compiler.stack.peek_number(0) && context.compiler.stack.peek_number(1) {
+              context.function.instructions().f64_lt();
+              context.compiler.stack.pop();
+              context.compiler.stack.pop();
+              context.compiler.stack.push_boolean();
+              Ok(())
+            } else {
+              context.runtime_error(ErrorMsg::OperandsMustBeNumbers, token)
+            }
+          },
+
+          Binary { left, right, token: Token { typ: LessEqual, loc } } => {
+            let fake_less = Binary {
+              left: left.clone(),
+              right: right.clone(),
+              token: Token { typ: Less, loc: loc.clone() },
+            };
+
+            let fake_equal = Binary {
+              left: left.clone(),
+              right: right.clone(),
+              token: Token { typ: EqualEqual, loc: loc.clone() },
+            };
+
+            let fake_or = Logical {
+              left: Box::new(fake_less),
+              right: Box::new(fake_equal),
+              token: Token { typ: Or, loc: loc.clone() },
+            };
+
+            compile_expr(context, &fake_or)
+          },
+
+          Binary { left, right, token: token @ Token { typ: Minus, .. } } => {
+            compile_expr(context, left)?;
+            compile_expr(context, right)?;
+
+            if context.compiler.stack.peek_number(0) && context.compiler.stack.peek_number(1) {
+              context.function.instructions().f64_sub();
+              context.compiler.stack.pop();
+              Ok(())
+            } else {
+              context.runtime_error(ErrorMsg::OperandsMustBeNumbers, token)
+            }
+          },
+
+          Binary { left, right, token: token @ Token { typ: Plus, .. } } => {
+            compile_expr(context, left)?;
+            compile_expr(context, right)?;
+
+            if context.compiler.stack.peek_number(0) && context.compiler.stack.peek_number(1) {
+              context.function.instructions().f64_add();
+              context.compiler.stack.pop();
+              Ok(())
+            } else if context.compiler.stack.peek_string(0) && context.compiler.stack.peek_string(1) {
+              todo!("String concatenation is not yet implemented");
+              //   #[allow(irrefutable_let_patterns)]
+              //   (Reference(GcPtr(x)), Reference(GcPtr(y)))
+              //     if let GcObject { object: HeapString(str1), .. } = unsafe { &*x }
+              //       && let GcObject { object: HeapString(str2), .. } = unsafe { &*y } =>
+              //   {
+              //     let _ = self.pop();
+              //     let _ = self.pop();
+              //     push_and_win!(Reference(GcPtr(self.compiler.heap.concatenate_strings(*str1, *str2).1)))
+              //   },
+            } else {
+              context.runtime_error(ErrorMsg::OperandsMustBeNumsOrStrs, token)
+            }
+          },
+
+          Binary { left, right, token: token @ Token { typ: Slash, .. } } => {
+            compile_expr(context, left)?;
+            compile_expr(context, right)?;
+
+            if context.compiler.stack.peek_number(0) && context.compiler.stack.peek_number(1) {
+              context.function.instructions().f64_div();
+              context.compiler.stack.pop();
+              Ok(())
+            } else {
+              context.runtime_error(ErrorMsg::OperandsMustBeNumbers, token)
+            }
+          },
+
+          Binary { left, right, token: token @ Token { typ: Star, .. } } => {
+            compile_expr(context, left)?;
+            compile_expr(context, right)?;
+
+            if context.compiler.stack.peek_number(0) && context.compiler.stack.peek_number(1) {
+              context.function.instructions().f64_mul();
+              context.compiler.stack.pop();
+              Ok(())
+            } else {
+              context.runtime_error(ErrorMsg::OperandsMustBeNumbers, token)
+            }
+          },
+
+          Binary { left: _, right: _, token } => todo!("This binary function is yet implemented: {token:?}"),
+
+          Call { callee: _, arguments: _, token: _ } => todo!("Not yet implemented"),
+          Get { object: _, var: _, token: _ } => todo!("Not yet implemented"),
+
+          Grouping { expression, .. } => compile_expr(context, expression),
+
+          LiteralExpr { literal, .. } => compile_literal(context, literal),
+
+          Logical { left, right, token: Token { typ: And, .. } } => {
+            compile_expr(context, left)?;
+
+            if context.compiler.stack.peek_boolean(0) {
+              context.function.instructions().if_(BlockType::FunctionType(context.logical_type_index));
+
+              compile_expr(context, right)?;
+
+              let consequent_is_bool = context.compiler.stack.peek_boolean(0);
+
+              if context.compiler.stack.peek_any(0) {
+                // Already encoded
+              } else if consequent_is_bool {
+                context.push_boolean_as_any();
+              } else if context.compiler.stack.peek_nil(0) {
+                context.push_nil_as_any();
+              } else if context.compiler.stack.peek_number(0) {
+                context.push_number_as_any();
+              } else {
+                todo!("Unhandled result type in `and`");
+              }
+
+              context
+                .function
+                .instructions()
+                .else_()
+                .i64_const(Boolean::False as i64)
+                .i32_const(Type::Boolean as i32)
+                .end();
+
+              if consequent_is_bool {
+                context.function.instructions().drop().i32_wrap_i64();
+                context.compiler.stack.pop();
+                context.compiler.stack.push_boolean();
+              }
+            } else if context.compiler.stack.peek_number(0) {
+              context.function.instructions().drop();
+              context.compiler.stack.pop();
+              compile_expr(context, right)?;
+            } else if context.compiler.stack.peek_nil(0) { // Auto-false
+            } else if context.compiler.stack.peek_any(0) {
+              todo!("Any go boom!");
+            } else {
+              todo!("Dunno what this is");
+            }
+
+            Ok(())
+          },
+
+          Logical { left, right, token: Token { typ: Or, .. } } => {
+            compile_expr(context, left)?;
+
+            if context.compiler.stack.peek_boolean(0) {
+              context
+                .function
+                .instructions()
+                .if_(BlockType::FunctionType(context.logical_type_index))
+                .i64_const(Boolean::True as i64)
+                .i32_const(Type::Boolean as i32)
+                .else_();
+              compile_expr(context, right)?;
+
+              let antecedent_is_bool = context.compiler.stack.peek_boolean(0);
+
+              if context.compiler.stack.peek_any(0) {
+                // Already encoded
+              } else if antecedent_is_bool {
+                context.push_boolean_as_any();
+              } else if context.compiler.stack.peek_nil(0) {
+                context.push_nil_as_any();
+              } else if context.compiler.stack.peek_number(0) {
+                context.push_number_as_any();
+              } else {
+                todo!("Unhandled result type in `or`");
+              }
+
+              context.function.instructions().end();
+
+              if antecedent_is_bool {
+                context.function.instructions().drop().i32_wrap_i64();
+                context.compiler.stack.pop();
+                context.compiler.stack.push_boolean();
+              }
+            } else if context.compiler.stack.peek_nil(0) {
+              context.function.instructions().drop();
+              context.compiler.stack.pop();
+              compile_expr(context, right)?;
+            } else if context.compiler.stack.peek_number(0) { // Auto-true
+            } else if context.compiler.stack.peek_any(0) {
+              todo!("Any go boom!");
+            } else {
+              todo!("Dunno what this is");
+            }
+
+            Ok(())
+          },
+
+          Logical { token, .. } => {
+            panic!("Illogical logical!  Got a: {token:?}");
+          },
+
+          Set { object: _, var: _, value: _, token: _ } => todo!("Not yet implemented"),
+          Super { var: _, token: _ } => todo!("Not yet implemented"),
+          This { token: _ } => todo!("Not yet implemented"),
+
+          Unary { right, token: Token { typ: Bang, .. } } => {
+            compile_expr(context, right)?;
+
+            if context.compiler.stack.peek_nil(0) {
+              context.function.instructions().drop();
+              context.compiler.stack.pop();
+              context.push_bool(true);
+            } else if context.compiler.stack.peek_boolean(0) {
+              context.function.instructions().i32_eqz();
+            } else if context.compiler.stack.peek_any(0) {
+              todo!("Any go boom!");
+            } else {
+              context.function.instructions().drop();
+              context.compiler.stack.pop();
+              context.push_bool(false);
+            }
+
+            Ok(())
+          },
+
+          Unary { right, token: token @ Token { typ: Minus, .. } } => {
+            compile_expr(context, right)?;
+            if context.compiler.stack.peek_number(0) {
+              context.function.instructions().f64_neg();
+              Ok(())
+            } else {
+              context.runtime_error(ErrorMsg::OperandMustBeNumber, token)
+            }
+          },
+
+          Unary { token, .. } => {
+            panic!("Disunitary unary!  Got a: {token:?}");
+          },
+
+          VarRef { var, token } => {
+            // This is only for globals
+            if let Some((index, _, typ)) = context.globals_map.get(&var.name) {
+              context.function.instructions().global_get(*index);
+              match typ {
+                Type::Nil => {
+                  context.function.instructions().drop();
+                  context.push_nil();
+                },
+                Type::Boolean => {
+                  context.function.instructions().i32x4_extract_lane(2);
+                  context.compiler.stack.push_boolean();
+                },
+                Type::Number => {
+                  context.function.instructions().i64x2_extract_lane(1).f64_reinterpret_i64();
+                  context.compiler.stack.push_number();
+                },
+                _ => {
+                  todo!("Retrieval for this type is not yet implemented");
+                },
+              }
+              Ok(())
+            } else {
+              context.runtime_error(ErrorMsg::UndefinedVariable, token)
+            }
+          },
+        }
       }
 
-      bc_index += 1;
+      fn compile_return(context: &mut Context, expr_opt: Option<&Expr>) -> Result<(), Error> {
+        if let Some(expr) = expr_opt {
+          compile_expr(context, expr)?;
+        } else {
+          context.push_nil();
+        }
+
+        context.push_type();
+        context.function.instructions().return_();
+        context.compiler.stack.pop();
+        context.compiler.stack.pop();
+
+        Ok(())
+      }
+
+      // TODO: Remove `allow`
+      #[allow(clippy::unnecessary_wraps)]
+      fn compile_literal(context: &mut Context, literal: &Literal) -> Result<(), Error> {
+        match literal {
+          BooleanLit(value) => {
+            context.push_bool(*value);
+          },
+          DoubleLit(value) => {
+            context.push_number(*value);
+          },
+          StringLit(_value) => todo!("Not yet implemented"),
+          NilLit => {
+            context.push_nil();
+          },
+        }
+        Ok(())
+      }
+
+      fn _compile_function(func: &AstFunction) -> Result<(), ErrorMsg> {
+        let AstFunction { fn_decl: _, params: _, fn_body: _, token: _ } = func;
+        todo!("Not yet implemented");
+      }
+
+      let mut errors = Vec::new();
+
+      for stmt in &ast.statements {
+        if let Err(msgs) = compile_statement(&mut context, stmt) {
+          errors.extend(msgs);
+        }
+      }
+
+      if let Err(msg) = compile_return(&mut context, None) {
+        errors.push(msg);
+      }
+
+      assert!(errors.is_empty(), "Compilation to Wasm failed: {errors:?}");
+
+      //  Named(Class) => {
+      //    todo!("Not yet implemented: CLASS");
+      //    // let (_, name_gc_ptr) = read_string!();
+      //    // let x = self.compiler.heap.allocate_class(ClassObj::new(name_gc_ptr));
+      //    // push_and_win!(Reference(GcPtr(x)))
+      //  },
+
+      //  Named(CloseUpvalue) => {
+      //    todo!("Not yet implemented: CLOSEUPVALUE");
+      //    // self.compiler.heap.close_upvalues(unsafe { self.stack_top.sub(1) });
+      //    // self.pop();
+      //    // Continue
+      //  },
+
+      //  Named(Closure) => {
+      //    todo!("Not yet implemented: CLOSURE");
+      //    // let constant = read_constant!();
+      //    // if let Reference(GcPtr(fn_gc_ptr)) = constant
+      //    //   && let GcObject { object, .. } = unsafe { &*fn_gc_ptr }
+      //    //   && let HeapFunction(_) = object
+      //    // {
+      //    //   let (closure_ptr, closure_gc_ptr) = self.compiler.heap.allocate_closure(fn_gc_ptr);
+      //    //   let result = push_and_win!(Reference(GcPtr(closure_gc_ptr)));
+
+      //    //   let closure = unsafe { &*closure_ptr };
+
+      //    //   let slots_ptr = frame!().slots_ptr;
+
+      //    //   for i in 0..(closure.upvalue_count as usize) {
+      //    //     let is_local = read_u8!();
+      //    //     let index = read_u8!() as usize;
+
+      //    //     if is_local == 1 {
+      //    //       unsafe {
+      //    //         let value_ptr = slots_ptr.add(index);
+      //    //         *closure.upvalues_ptr_ptr.add(i) = self.capture_upvalue(value_ptr);
+      //    //       }
+      //    //     } else {
+      //    //       let owning_closure = frame!().closure();
+      //    //       unsafe { *closure.upvalues_ptr_ptr.add(i) = *owning_closure.upvalues_ptr_ptr.add(index) };
+      //    //     }
+      //    //   }
+
+      //    //   result
+      //    // } else {
+      //    //   runtime_error!("Tried to read a function and got this: {constant:?}")
+      //    // }
+      //  },
+
+      //  Named(FnCall) => {
+      //    todo!("Not yet implemented: FNCALL");
+      //    // let arg_count = read_u8!();
+      //    // let value = self.peek(arg_count as usize);
+      //    // self.call_value_for_error(&value, arg_count).unwrap_or(Continue)
+      //  },
+
+      //  Named(GetLocal) => {
+      //    todo!("Not yet implemented: GETLOCAL");
+      //    // let slot_num = read_u8!();
+      //    // let slots_ptr = frame!().slots_ptr;
+      //    // let value = unsafe { &*slots_ptr.add(slot_num as usize) }.clone();
+      //    // push_and_win!(value)
+      //  },
+
+      //  Named(GetProperty) => {
+      //    todo!("Not yet implemented: GETPROPERTY");
+      //    // if let Reference(GcPtr(instance_gc_ptr)) = self.peek(0)
+      //    //   && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
+      //    // {
+      //    //   let instance_obj = unsafe { &*instance_obj_ptr };
+
+      //    //   let (name, _) = read_string!();
+
+      //    //   if let Some(property_value) = instance_obj.fields.get(name) {
+      //    //     self.pop();
+      //    //     push_and_win!(unsafe { &*property_value }.clone())
+      //    //   } else if let Some(value_gc_ptr) = self.bind_method(instance_obj.class(), name) {
+      //    //     push_and_win!(Reference(GcPtr(value_gc_ptr)))
+      //    //   } else {
+      //    //     runtime_error!("Undefined property '{name}'.")
+      //    //   }
+      //    // } else {
+      //    //   runtime_error!("Only instances have properties.")
+      //    // }
+      //  },
+
+      //  Named(GetSuper) => {
+      //    todo!("Not yet implemented: GETSUPER");
+      //    // let (name_str, _) = read_string!();
+
+      //    // if let Reference(GcPtr(superclass_gc_ptr)) = self.pop()
+      //    //   && let HeapClass(superclass_obj_ptr) = unsafe { &*superclass_gc_ptr }.object
+      //    // {
+      //    //   let superclass_obj = unsafe { &*superclass_obj_ptr };
+
+      //    //   if let Some(value_gc_ptr) = self.bind_method(superclass_obj, name_str) {
+      //    //     push_and_win!(Reference(GcPtr(value_gc_ptr)))
+      //    //   } else {
+      //    //     runtime_error!("Undefined property '{name_str}'.")
+      //    //   }
+      //    // } else {
+      //    //   runtime_error!("Only instances can use `super`.")
+      //    // }
+      //  },
+
+      //  Named(GetUpvalue) => {
+      //    todo!("Not yet implemented: GETUPVALUE");
+      //    // let slot = read_u8!() as usize;
+      //    // let closure = frame_mut!().closure();
+      //    // let HeapUpvalue(upvalue_ptr) = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.object else {
+      //    //   panic!("Impossible for heap upvalue to be non-upvalue");
+      //    // };
+      //    // let value_ptr = unsafe { &*upvalue_ptr }.value_ptr;
+      //    // let value = unsafe { &*value_ptr }.clone();
+      //    // push_and_win!(value)
+      //  },
+
+      //  Named(Inherit) => {
+      //    todo!("Not yet implemented: INHERIT");
+      //    // if let Reference(GcPtr(super_gc_ptr)) = self.peek(1)
+      //    //   && let HeapClass(super_class_obj_ptr) = unsafe { &*super_gc_ptr }.object
+      //    //   && let superclass = unsafe { &mut *super_class_obj_ptr }
+      //    // {
+      //    //   if let Reference(GcPtr(sub_gc_ptr)) = self.peek(0)
+      //    //     && let HeapClass(sub_class_obj_ptr) = unsafe { &*sub_gc_ptr }.object
+      //    //     && let subclass = unsafe { &mut *sub_class_obj_ptr }
+      //    //   {
+      //    //     superclass.methods.copy_into(&mut subclass.methods);
+      //    //     self.pop();
+      //    //     Continue
+      //    //   } else {
+      //    //     runtime_error!("Subclass must be a class.")
+      //    //   }
+      //    // } else {
+      //    //   runtime_error!("Superclass must be a class.")
+      //    // }
+      //  },
+
+      //  Named(Invoke) => {
+      //    todo!("Not yet implemented: INVOKE");
+      //    // let (name_ptr, _) = read_string!();
+      //    // let arg_count = read_u8!();
+      //    // self.invoke(name_ptr, arg_count).unwrap_or(Continue)
+      //  },
+
+      //  Named(Loop) => {
+      //    todo!("Not yet implemented: LOOP");
+      //    //let offset = read_u16!() as usize;
+      //    //let current = frame_mut!();
+      //    //current.inst_ptr = unsafe { current.inst_ptr.sub(offset) };
+      //    //Continue
+      //  },
+
+      //  Named(Method) => {
+      //    todo!("Not yet implemented: METHODCODE");
+      //    //let (_, method_name_gc_ptr) = read_string!();
+      //    //self.define_method(method_name_gc_ptr);
+      //    //Continue
+      //  },
+
+      //  Named(Pop) => {
+      //    todo!("Not yet implemented: POP");
+      //    //let _ = self.pop();
+      //    //Continue
+      //  },
+
+      //  Named(SetLocal) => {
+      //    todo!("Not yet implemented: SETLOCAL");
+      //    //let slot_num = read_u8!();
+      //    //let slots_ptr = frame!().slots_ptr;
+      //    //let value = self.peek(0);
+      //    //unsafe { *slots_ptr.add(slot_num as usize) = value };
+      //    //Continue
+      //  },
+
+      //  Named(SetProperty) => {
+      //    todo!("Not yet implemented: SETPROPERTY");
+      //    //if let Reference(GcPtr(instance_gc_ptr)) = self.peek(1)
+      //    //  && let HeapObjInstance(instance_obj_ptr) = unsafe { &*instance_gc_ptr }.object
+      //    //{
+      //    //  let instance_obj = unsafe { &mut *instance_obj_ptr };
+      //    //  let (_, f_name_gc_ptr) = read_string!();
+      //    //  instance_obj.fields.set(f_name_gc_ptr, self.peek(0));
+
+      //    //  let value = self.pop();
+      //    //  let _ = self.pop();
+      //    //  push_and_win!(value)
+      //    //} else {
+      //    //  runtime_error!("Only instances have fields.")
+      //    //}
+      //  },
+
+      //  Named(SetUpvalue) => {
+      //    todo!("Not yet implemented: SETUPVALUE");
+      //    //let slot = read_u8!() as usize;
+      //    //let closure = frame_mut!().closure();
+      //    //let HeapUpvalue(upvalue_ptr) = unsafe { &**closure.upvalues_ptr_ptr.add(slot) }.object else {
+      //    //  panic!("Impossible for heap upvalue to be non-upvalue");
+      //    //};
+      //    //let value_ptr = unsafe { &*upvalue_ptr }.value_ptr;
+      //    //let new_value = self.peek(0);
+      //    //unsafe { *value_ptr = new_value };
+      //    //Continue
+      //  },
+
+      //  Named(SuperInvoke) => {
+      //    todo!("Not yet implemented: SUPERINVOKE");
+      //    // let (name, _) = read_string!();
+      //    // let arg_count = read_u8!();
+      //    // let Reference(GcPtr(gc_ptr)) = self.pop() else {
+      //    //   panic!("Super-invokee value must be a reference");
+      //    // };
+      //    // let HeapClass(class_obj_ptr) = unsafe { &*gc_ptr }.object else {
+      //    //   panic!("Super-invokee value must be a class");
+      //    // };
+      //    // let class = unsafe { &*class_obj_ptr };
+      //    // self.invoke_from_class(class, name, arg_count).unwrap_or(Continue)
+      //  },
     }
 
-    function.instructions().end();
+    context.function.instructions().end();
 
     let mut exports = ExportSection::new();
     exports.export("main", ExportKind::Func, main_fn_index);
     exports.export("memory", ExportKind::Memory, public_memory_index);
     module.section(&exports);
 
-    code.function(&function);
+    code.function(&context.function);
     module.section(&code);
 
     module.section(&data);
 
     module.finish()
+  }
+}
+
+fn wrap_errs<T, U>(res: Result<T, U>) -> Result<T, Vec<U>> {
+  match res {
+    Err(msg) => Err(vec![msg]),
+    Ok(x) => Ok(x),
   }
 }

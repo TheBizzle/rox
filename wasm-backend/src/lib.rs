@@ -5,15 +5,16 @@ mod wasm_compiler;
 
 use wasmparser::validate;
 
-use rox_lib::compiler::Compiler;
+use rox_lib::parser::Parser;
 
 use crate::wasm_compiler::WasmCompiler;
 use crate::wasm_result::WasmResult::{self, CompilationError, Success, ValidationError};
 
 #[must_use]
 pub fn generate_wasm(source: &str) -> WasmResult {
-  if let Some((compilation, _)) = Compiler::default().run(source.to_string()) {
-    let wasm = WasmCompiler::new().run(&compilation);
+  #[allow(clippy::option_if_let_else)]
+  if let Some(ast) = Parser::new(source.to_string()).parse() {
+    let wasm = WasmCompiler::new().run(&ast);
 
     match validate(&wasm) {
       Ok(_) => Success { wasm },
