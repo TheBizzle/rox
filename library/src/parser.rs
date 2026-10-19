@@ -218,8 +218,8 @@ impl Parser {
   }
 
   fn consume_variable(&mut self, error_message: &str) -> Option<Variable> {
-    let var_name = self.consume_ident(error_message)?;
-    Some(Variable { var_name, var_token: self.previous() })
+    let name = self.consume_ident(error_message)?;
+    Some(Variable { name, token: self.previous() })
   }
 
   const fn nil_expr(token: Token) -> Expr {
@@ -260,7 +260,7 @@ impl Parser {
 
     if self.token_is_a(&Less) {
       if let Some(super_var) = self.consume_variable("Expect superclass name.") {
-        if super_var.var_name == class_var.var_name {
+        if super_var.name == class_var.name {
           self.error("A class can't inherit from itself.");
         }
         super_name_var_opt = Some(super_var);
@@ -297,7 +297,7 @@ impl Parser {
 
   fn parse_method(&mut self) -> Option<Function> {
     let name = self.consume_variable("Expect method name.")?;
-    let kind = if name.var_name == "init" {
+    let kind = if name.name == "init" {
       FunctionKind::Initializer
     } else {
       FunctionKind::Method
@@ -306,7 +306,7 @@ impl Parser {
   }
 
   fn parse_function(&mut self, fn_decl: Variable, kind: FunctionKind) -> Function {
-    let token = fn_decl.var_token.clone();
+    let token = fn_decl.token.clone();
     self.function_kinds.push(kind);
 
     self.consume(&LeftParen, "Expect '(' after function name.");
@@ -344,7 +344,7 @@ impl Parser {
     let initial = if self.token_is_a(&Equal) {
       self.parse_expression()?
     } else {
-      Self::nil_expr(new_var.var_token.clone())
+      Self::nil_expr(new_var.token.clone())
     };
 
     self.consume(&Semicolon, "Expect ';' after variable declaration.");
@@ -541,7 +541,7 @@ impl Parser {
       },
 
       Identifier { .. } => {
-        let var = Variable { var_name: self.lexeme(&token), var_token: token.clone() };
+        let var = Variable { name: self.lexeme(&token), token: token.clone() };
         if can_assign && self.token_is_a(&Equal) {
           let eq_token = self.previous();
           let value = Box::new(self.parse_expression()?);

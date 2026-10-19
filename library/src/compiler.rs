@@ -383,7 +383,7 @@ impl Compiler {
 
     for method in methods {
       let name_byte = self.ident_constant(&method.fn_decl);
-      let function_kind = if method.fn_decl.var_name == "init" {
+      let function_kind = if method.fn_decl.name == "init" {
         Initializer
       } else {
         Method
@@ -403,7 +403,7 @@ impl Compiler {
     self.set_token(&func.token);
 
     let function_obj = {
-      let (_, name_gc_ptr) = self.heap.copy_string(&self.parser.source, &func.fn_decl.var_token.loc);
+      let (_, name_gc_ptr) = self.heap.copy_string(&self.parser.source, &func.fn_decl.token.loc);
       UserDefined { arity: 0, chunk: Chunk::default(), name_gc_ptr, upvalue_count: 0 }
     };
 
@@ -446,9 +446,9 @@ impl Compiler {
   fn compile_expr(&mut self, expr: &Expr) {
     match expr {
       Expr::Assign { var, value, token } => {
-        self.set_token(&var.var_token);
-        let name_gc_ptr = self.name_ptr(&var.var_token);
-        let (arg, _, set_op) = self.resolve_variable(&var.var_name, name_gc_ptr);
+        self.set_token(&var.token);
+        let name_gc_ptr = self.name_ptr(&var.token);
+        let (arg, _, set_op) = self.resolve_variable(&var.name, name_gc_ptr);
         self.compile_expr(value);
         self.set_token(token);
         self.emit_bytes(set_op, arg);
@@ -612,7 +612,7 @@ impl Compiler {
 
   fn declare_variable(&mut self, var: &Variable) {
     if self.program().scope_depth > 0 {
-      self.set_token(&var.var_token);
+      self.set_token(&var.token);
 
       let mut is_duplicate = false;
       {
@@ -625,7 +625,7 @@ impl Compiler {
             {
               break; // In this case, we're just shadowing, so no worries. --Jason B. (8/23/26)
             }
-            if var.var_name == *name {
+            if var.name == *name {
               is_duplicate = true;
             }
           }
@@ -636,7 +636,7 @@ impl Compiler {
         self.error("Already a variable with this name in this scope.");
       }
 
-      self.add_local(var.var_name.clone());
+      self.add_local(var.name.clone());
     }
   }
 
@@ -662,8 +662,8 @@ impl Compiler {
   }
 
   fn ident_constant(&mut self, var: &Variable) -> u8 {
-    self.set_token(&var.var_token);
-    let name_gc_ptr = self.name_ptr(&var.var_token);
+    self.set_token(&var.token);
+    let name_gc_ptr = self.name_ptr(&var.token);
     self.reference_ident_constant(name_gc_ptr)
   }
 
@@ -679,9 +679,9 @@ impl Compiler {
   }
 
   fn load_variable(&mut self, var: &Variable) {
-    self.set_token(&var.var_token);
-    let name_gc_ptr = self.name_ptr(&var.var_token);
-    let (arg, get_op, _) = self.resolve_variable(&var.var_name, name_gc_ptr);
+    self.set_token(&var.token);
+    let name_gc_ptr = self.name_ptr(&var.token);
+    let (arg, get_op, _) = self.resolve_variable(&var.name, name_gc_ptr);
     self.emit_bytes(get_op, arg);
   }
 

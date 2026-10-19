@@ -67,8 +67,8 @@ pub struct Function {
 }
 
 pub struct Variable {
-  pub var_name: String,
-  pub var_token: Token,
+  pub name: String,
+  pub token: Token,
 }
 
 #[allow(clippy::enum_variant_names, dead_code)]
