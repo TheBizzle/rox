@@ -1,7 +1,10 @@
 pub mod wasm_result;
 
+mod lox_type;
+mod scoped_vars;
 mod shadow_stack;
 mod wasm_compiler;
+mod wasm_const;
 
 use wasmparser::validate;
 

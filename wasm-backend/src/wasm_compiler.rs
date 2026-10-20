@@ -1,11 +1,11 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
-use strum::{EnumCount, EnumIter, FromRepr, IntoEnumIterator};
+use strum::{EnumCount, FromRepr, IntoEnumIterator};
 
 use wasm_encoder::{
   BlockType, CodeSection, ConstExpr, DataSection, EntityType, ExportKind, ExportSection, Function,
-  FunctionSection, GlobalSection, GlobalType, Ieee64, ImportSection, InstructionSink, MemorySection,
-  MemoryType, Module, TypeSection, ValType,
+  FunctionSection, GlobalSection, GlobalType, Ieee64, ImportSection, MemorySection, MemoryType, Module,
+  TypeSection, ValType,
 };
 
 use rox_lib::parser::token::Token;
@@ -24,7 +24,10 @@ use rox_lib::parser::ast::{
   },
 };
 
+use super::lox_type::LoxType;
+use super::scoped_vars::{extract_var, find_scope_vars, resolve_var};
 use super::shadow_stack::ShadowStack;
+use super::wasm_const::{Boolean, NIL, WasmConst};
 
 pub struct WasmCompiler {
   stack: ShadowStack,
@@ -32,9 +35,10 @@ pub struct WasmCompiler {
 
 struct Context<'a> {
   compiler: &'a mut WasmCompiler,
+  depth: u8,
   error_fn_index: u32,
   function: Function,
-  globals_map: HashMap<String, (u32, ConstExpr, Type)>,
+  globals_map: HashMap<(u8, String), (u32, ConstExpr, LoxType)>,
   logical_type_index: u32,
   print_number_fn_index: u32,
   print_fn_index: u32,
@@ -44,11 +48,11 @@ struct Context<'a> {
 impl Context<'_> {
   pub fn push_type(&mut self) {
     let typ = if self.compiler.stack.peek_nil(0) {
-      Type::Nil
+      LoxType::Nil
     } else if self.compiler.stack.peek_boolean(0) {
-      Type::Boolean
+      LoxType::Boolean
     } else if self.compiler.stack.peek_number(0) {
-      Type::Number
+      LoxType::Number
     } else {
       panic!("Unsupported stack item type");
     };
@@ -73,19 +77,19 @@ impl Context<'_> {
   }
 
   pub fn push_boolean_as_any(&mut self) {
-    self.function.instructions().i64_extend_i32_u().i32_const(Type::Boolean as i32);
+    self.function.instructions().i64_extend_i32_u().i32_const(LoxType::Boolean as i32);
     self.compiler.stack.pop();
     self.compiler.stack.push_any();
   }
 
   pub fn push_nil_as_any(&mut self) {
-    self.function.instructions().i64_extend_i32_u().i32_const(Type::Nil as i32);
+    self.function.instructions().i64_extend_i32_u().i32_const(LoxType::Nil as i32);
     self.compiler.stack.pop();
     self.compiler.stack.push_any();
   }
 
   pub fn push_number_as_any(&mut self) {
-    self.function.instructions().i64_reinterpret_f64().i32_const(Type::Number as i32);
+    self.function.instructions().i64_reinterpret_f64().i32_const(LoxType::Number as i32);
     self.compiler.stack.pop();
     self.compiler.stack.push_any();
   }
@@ -95,7 +99,7 @@ impl Context<'_> {
       .function
       .instructions()
       .i32x4_splat()
-      .i32_const(Type::Boolean as i32)
+      .i32_const(LoxType::Boolean as i32)
       .i32x4_replace_lane(0)
       .i32_const(0)
       .i32x4_replace_lane(1)
@@ -108,7 +112,7 @@ impl Context<'_> {
       .function
       .instructions()
       .i32x4_splat()
-      .i32_const(Type::Nil as i32)
+      .i32_const(LoxType::Nil as i32)
       .i32x4_replace_lane(0)
       .i32_const(0)
       .i32x4_replace_lane(1)
@@ -122,7 +126,7 @@ impl Context<'_> {
       .instructions()
       .i64_reinterpret_f64()
       .i64x2_splat()
-      .i32_const(Type::Number as i32)
+      .i32_const(LoxType::Number as i32)
       .i32x4_replace_lane(0)
       .i32_const(0)
       .i32x4_replace_lane(1);
@@ -139,58 +143,6 @@ impl Context<'_> {
 }
 
 type Error = (ErrorMsg, Token);
-
-#[allow(dead_code)]
-enum WasmConst {
-  I32(i32),
-  I64(i64), // TODO: Use it?
-  F64(Ieee64),
-}
-
-impl WasmConst {
-  pub fn as_v128(&self) -> ConstExpr {
-    match self {
-      Self::I32(x) => ConstExpr::v128_const(i128::from(*x) << 64),
-      Self::I64(x) => ConstExpr::v128_const(i128::from(*x) << 64),
-      Self::F64(x) => ConstExpr::v128_const(i128::from(x.bits()) << 64),
-    }
-  }
-
-  pub fn encode_push_into(&self, instrs: &mut InstructionSink) {
-    match self {
-      Self::I32(x) => instrs.i32_const(*x),
-      Self::I64(x) => instrs.i64_const(*x),
-      Self::F64(x) => instrs.f64_const(*x),
-    };
-  }
-
-  pub const fn val_type(&self) -> ValType {
-    match self {
-      Self::I32(..) => ValType::I32,
-      Self::I64(..) => ValType::I64,
-      Self::F64(..) => ValType::F64,
-    }
-  }
-}
-
-#[derive(Clone, Debug, EnumCount, EnumIter, FromRepr, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(u8)]
-enum Type {
-  Nil,
-  Boolean,
-  Number,
-  Reference,
-  Raw,
-}
-
-const NIL: i32 = 0;
-
-#[derive(FromRepr, Eq, Ord, PartialEq, PartialOrd)]
-#[repr(u8)]
-enum Boolean {
-  False,
-  True,
-}
 
 #[derive(Clone, Debug, FromRepr, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -262,55 +214,12 @@ impl WasmCompiler {
 
     module.section(&memories);
 
-    let mut globals_queue: VecDeque<_> = ast
-      .statements
-      .iter()
-      .filter_map(|stmt| {
-        if let DeclareVar { new_var, initial, .. } = stmt {
-          Some((new_var, initial))
-        } else {
-          None
-        }
-      })
-      .collect();
-
-    let mut globals_map: HashMap<String, (u32, ConstExpr, Type)> = HashMap::new();
+    let globals_map = find_scope_vars(&ast.statements);
     let mut globals = GlobalSection::new();
-
-    while let Some((new_var, initial)) = globals_queue.pop_front() {
-      let (value, typ) = match initial {
-        LiteralExpr { literal, .. } => {
-          let (wasm_const, typ) = match literal {
-            NilLit => (WasmConst::I32(NIL), Type::Nil),
-            BooleanLit(false) => (WasmConst::I32(Boolean::False as i32), Type::Boolean),
-            BooleanLit(true) => (WasmConst::I32(Boolean::True as i32), Type::Boolean),
-            DoubleLit(x) => (WasmConst::F64(Ieee64::new(x.to_bits())), Type::Number),
-            StringLit(_) => (WasmConst::I32(Boolean::True as i32), Type::Reference),
-          };
-          (wasm_const.as_v128(), typ)
-        },
-
-        VarRef { var, .. } if let Some((_, value, typ)) = globals_map.get(&var.name) => {
-          (value.clone(), typ.clone())
-        },
-
-        VarRef { .. } => {
-          globals_queue.push_back((new_var, initial));
-          break;
-        },
-
-        x => {
-          panic!("Not-yet-supported initial value: {x:?}");
-        },
-      };
-
-      let index = u32::try_from(globals_map.len()).unwrap();
-      globals_map.insert(new_var.name.clone(), (index, value.clone(), typ));
-
+    for (_, value, _) in globals_map.values() {
       let gtype = GlobalType { val_type: ValType::V128, mutable: true, shared: false };
-      globals.global(gtype, &value);
+      globals.global(gtype, value);
     }
-
     module.section(&globals);
 
     let mut code = CodeSection::new();
@@ -323,17 +232,17 @@ impl WasmCompiler {
             .block(BlockType::Empty)
               .block(BlockType::Empty)
                 .local_get(1)
-                .br_table(Type::iter().map(|t| t as u32), u32::try_from(Type::COUNT).unwrap())
+                .br_table(LoxType::iter().map(|t| t as u32), u32::try_from(LoxType::COUNT).unwrap())
               .end()
               .local_get(0) // 0: Nil
               .i32_wrap_i64()
-              .i32_const(Type::Nil as i32)
+              .i32_const(LoxType::Nil as i32)
               .call(print_int_fn_index)
               .br(4)
             .end()
             .local_get(0) // 1: Boolean
             .i32_wrap_i64()
-            .i32_const(Type::Boolean as i32)
+            .i32_const(LoxType::Boolean as i32)
             .call(print_int_fn_index)
             .br(3)
           .end()
@@ -388,6 +297,7 @@ impl WasmCompiler {
 
     let mut context = Context {
       compiler: self,
+      depth: 0,
       error_fn_index,
       function,
       globals_map,
@@ -405,6 +315,8 @@ impl WasmCompiler {
       fn compile_statement(context: &mut Context, stmt: &Statement) -> Result<(), Vec<Error>> {
         match stmt {
           Block { contents, .. } => {
+            context.depth += 1;
+
             // TODO: Push scope and establish new namespace
             let mut errors = Vec::new();
             for s in contents {
@@ -412,6 +324,8 @@ impl WasmCompiler {
                 errors.extend(msgs);
               }
             }
+
+            context.depth -= 1;
 
             if errors.is_empty() {
               Ok(())
@@ -513,9 +427,10 @@ impl WasmCompiler {
             compile_expr(context, value)?;
 
             let name = var.name.clone();
+            let depth = context.depth;
 
             // This is only for globals
-            if let Some((index, value, _typ)) = context.globals_map.remove(&var.name) {
+            if let Some((index, value, _typ)) = extract_var(&mut context.globals_map, depth, &var.name) {
               if context.compiler.stack.peek_any(0) {
                 panic!("Can this even happen?");
                 //let _ = typ.take();
@@ -527,13 +442,13 @@ impl WasmCompiler {
                 //  .i64x2_replace_lane(1);
               } else if context.compiler.stack.peek_boolean(0) {
                 context.push_boolean_as_v128();
-                context.globals_map.insert(name, (index, value, Type::Boolean));
+                context.globals_map.insert((0, name), (index, value, LoxType::Boolean));
               } else if context.compiler.stack.peek_nil(0) {
                 context.push_nil_as_v128();
-                context.globals_map.insert(name, (index, value, Type::Nil));
+                context.globals_map.insert((0, name), (index, value, LoxType::Nil));
               } else if context.compiler.stack.peek_number(0) {
                 context.push_number_as_v128();
-                context.globals_map.insert(name, (index, value, Type::Number));
+                context.globals_map.insert((0, name), (index, value, LoxType::Number));
               } else {
                 todo!("Unhandled result type when setting global");
               }
@@ -768,7 +683,7 @@ impl WasmCompiler {
                 .instructions()
                 .else_()
                 .i64_const(Boolean::False as i64)
-                .i32_const(Type::Boolean as i32)
+                .i32_const(LoxType::Boolean as i32)
                 .end();
 
               if consequent_is_bool {
@@ -799,7 +714,7 @@ impl WasmCompiler {
                 .instructions()
                 .if_(BlockType::FunctionType(context.logical_type_index))
                 .i64_const(Boolean::True as i64)
-                .i32_const(Type::Boolean as i32)
+                .i32_const(LoxType::Boolean as i32)
                 .else_();
               compile_expr(context, right)?;
 
@@ -882,23 +797,23 @@ impl WasmCompiler {
 
           VarRef { var, token } => {
             // This is only for globals
-            if let Some((index, _, typ)) = context.globals_map.get(&var.name) {
+            if let Some((index, _, typ)) = resolve_var(&context.globals_map, context.depth, &var.name) {
               context.function.instructions().global_get(*index);
               match typ {
-                Type::Nil => {
+                LoxType::Nil => {
                   context.function.instructions().drop();
                   context.push_nil();
                 },
-                Type::Boolean => {
+                LoxType::Boolean => {
                   context.function.instructions().i32x4_extract_lane(2);
                   context.compiler.stack.push_boolean();
                 },
-                Type::Number => {
+                LoxType::Number => {
                   context.function.instructions().i64x2_extract_lane(1).f64_reinterpret_i64();
                   context.compiler.stack.push_number();
                 },
-                _ => {
-                  todo!("Retrieval for this type is not yet implemented");
+                LoxType::Reference => {
+                  todo!("Retrieval for references is not yet implemented");
                 },
               }
               Ok(())
