@@ -343,15 +343,31 @@ impl WasmCompiler {
 
           ExpressionStatement { expr, .. } => wrap_errs(compile_expr(context, expr)),
 
-          ForStatement {
-            initializer_opt: _,
-            cond_opt: _,
-            incrementer_opt: _,
-            body: _,
-            body_end_token: _,
-            token: _,
-          } => {
-            todo!("Not yet implemented")
+          ForStatement { initializer_opt, cond_opt, incrementer_opt, body, .. } => {
+            context.function.instructions().block(BlockType::Empty); // Jump target: 1
+            context.depth += 1;
+
+            if let Some(initializer) = initializer_opt {
+              compile_statement(context, initializer)?;
+            }
+
+            context.function.instructions().loop_(BlockType::Empty); // Jump target: 0
+
+            if let Some(cond) = cond_opt {
+              wrap_errs(compile_expr(context, cond))?;
+              context.function.instructions().i32_eqz().br_if(1);
+            }
+
+            compile_statement(context, body)?;
+
+            if let Some(incrementer) = incrementer_opt {
+              wrap_errs(compile_expr(context, incrementer))?;
+            }
+
+            context.depth -= 1;
+            context.function.instructions().br(0).end().end();
+
+            Ok(())
           },
 
           FunctionStatement { func: _, token: _ } => todo!("Not yet implemented"),
