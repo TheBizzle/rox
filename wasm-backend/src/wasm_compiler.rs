@@ -683,7 +683,7 @@ impl WasmCompiler {
                 todo!("It's currently only possible to call the special function `clock`");
               }
             } else {
-              todo!("It's currently only possible to call functions parsed as variables");
+              panic!("Impossible to use a non-variable as a function call target!");
             }
           },
 
