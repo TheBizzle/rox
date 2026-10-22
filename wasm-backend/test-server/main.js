@@ -1,5 +1,9 @@
 const imports = {
   env: {
+    clock() {
+      return Date.now() / 1000;
+    },
+
     error(error_num) {
       let msg = "UNKNOWN_ERROR";
       switch(error_num) {

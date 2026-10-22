@@ -22,6 +22,7 @@ use rox_lib::parser::ast::{
     self, Block, Class, DeclareVar, ExpressionStatement, ForStatement, FunctionStatement, IfElse,
     PrintStatement, ReturnStatement, WhileStatement,
   },
+  Variable,
 };
 
 use super::lox_type::LoxType;
@@ -36,6 +37,7 @@ pub struct WasmCompiler {
 struct Context<'a> {
   compiler: &'a mut WasmCompiler,
   depth: u8,
+  clock_fn_index: u32,
   error_fn_index: u32,
   function: Function,
   globals_map: HashMap<(u8, String), (u32, ConstExpr, LoxType)>,
@@ -176,6 +178,9 @@ impl WasmCompiler {
 
     let mut types = TypeSection::new();
 
+    let clock_type_index = types.len();
+    types.ty().function([], [ValType::F64]);
+
     let error_type_index = types.len();
     types.ty().function([ValType::I32, ValType::I32], []);
 
@@ -197,6 +202,8 @@ impl WasmCompiler {
     module.section(&types);
 
     let mut imports = ImportSection::new();
+    let clock_fn_index = imports.len();
+    imports.import("env", "clock", EntityType::Function(clock_type_index));
     let error_fn_index = imports.len();
     imports.import("env", "error", EntityType::Function(error_type_index));
     let print_int_fn_index = imports.len();
@@ -298,6 +305,7 @@ impl WasmCompiler {
     let mut context = Context {
       compiler: self,
       depth: 0,
+      clock_fn_index,
       error_fn_index,
       function,
       globals_map,
@@ -665,7 +673,20 @@ impl WasmCompiler {
 
           Binary { left: _, right: _, token } => todo!("This binary function is yet implemented: {token:?}"),
 
-          Call { callee: _, arguments: _, token: _ } => todo!("Not yet implemented"),
+          Call { callee, arguments: _, token: _ } => {
+            if let VarRef { var: Variable { name, .. }, .. } = &**callee {
+              if resolve_var(&context.globals_map, context.depth, name).is_none() && name == "clock" {
+                context.function.instructions().call(context.clock_fn_index);
+                context.compiler.stack.push_number();
+                Ok(())
+              } else {
+                todo!("It's currently only possible to call the special function `clock`");
+              }
+            } else {
+              todo!("It's currently only possible to call functions parsed as variables");
+            }
+          },
+
           Get { object: _, var: _, token: _ } => todo!("Not yet implemented"),
 
           Grouping { expression, .. } => compile_expr(context, expression),
